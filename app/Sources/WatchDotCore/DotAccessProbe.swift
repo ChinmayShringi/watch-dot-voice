@@ -2,10 +2,10 @@ import Foundation
 import CoreFoundation
 
 public enum DotProbeStage: String, Sendable, Equatable {
-    case primary = "Dot primario"
-    case room = "Sala del Dot"
-    case send = "Envío al Dot"
-    case history = "Respuesta del Dot"
+    case primary = "Primary Dot"
+    case room = "Dot room"
+    case send = "Send to Dot"
+    case history = "Dot reply"
 }
 
 public struct LocatedDot: Sendable, Equatable, Codable {
@@ -31,23 +31,23 @@ enum DotProbeError: Error, Equatable {
 
     var message: String {
         switch self {
-        case .session: "La sesión no permite esta prueba o ha expirado. Vuelve a autorizar la cuenta."
-        case .tokenMetadata: "La sesión no contiene los datos de cuenta necesarios para esta prueba."
-        case .noPrimary: "OpenAI no devolvió un Dot primario para esta cuenta."
-        case .unavailable: "El Dot primario no está disponible o aún no tiene sala."
-        case .destination: "La sala recibida no coincide con el Dot primario. Prueba detenida."
-        case .membership: "No se pudo verificar tu membresía y la del Dot en esta sala. Prueba detenida."
-        case .invalidIdentifier: "El servicio devolvió un identificador vacío, excesivo o no utilizable. Prueba detenida."
-        case .challenge(let stage, let status): "\(stage.rawValue): HTTP \(status), verificación del servicio requerida. Prueba detenida."
-        case .schema(let stage): "\(stage.rawValue): respuesta no reconocida. Prueba detenida."
-        case .network(let stage): "\(stage.rawValue): no se pudo completar la conexión. Puedes repetir la prueba."
-        case .tls(let stage): "\(stage.rawValue): no se pudo verificar la conexión segura."
+        case .session: "The session doesn't allow this check or has expired. Authorize the account again."
+        case .tokenMetadata: "The session doesn't contain the account data this check needs."
+        case .noPrimary: "OpenAI returned no primary Dot for this account."
+        case .unavailable: "The primary Dot is unavailable or has no room yet."
+        case .destination: "The returned room doesn't match the primary Dot. Check stopped."
+        case .membership: "Couldn't verify your and the Dot's membership in this room. Check stopped."
+        case .invalidIdentifier: "The service returned an empty, oversized or unusable identifier. Check stopped."
+        case .challenge(let stage, let status): "\(stage.rawValue): HTTP \(status), service verification required. Check stopped."
+        case .schema(let stage): "\(stage.rawValue): unrecognized response. Check stopped."
+        case .network(let stage): "\(stage.rawValue): couldn't complete the connection. You can run the check again."
+        case .tls(let stage): "\(stage.rawValue): couldn't verify the secure connection."
         case .http(let stage, let status):
             switch status {
-            case 401: "\(stage.rawValue): HTTP 401. OpenAI no aceptó esta sesión."
-            case 403: "\(stage.rawValue): HTTP 403. Acceso rechazado; no se intentará eludir verificaciones."
-            case 429: "\(stage.rawValue): HTTP 429. Límite del servicio; espera antes de repetir."
-            default: "\(stage.rawValue): HTTP \(status). Prueba detenida."
+            case 401: "\(stage.rawValue): HTTP 401. OpenAI didn't accept this session."
+            case 403: "\(stage.rawValue): HTTP 403. Access denied; no attempt will be made to bypass checks."
+            case 429: "\(stage.rawValue): HTTP 429. Service limit reached; wait before trying again."
+            default: "\(stage.rawValue): HTTP \(status). Check stopped."
             }
         }
     }
@@ -234,16 +234,16 @@ enum DotJSONKind: String, Codable, Sendable {
     }
     var label: String {
         switch self {
-        case .absent: "ausente"
-        case .null: "nulo"
-        case .object: "objeto"
-        case .array: "lista"
-        case .string: "texto"
-        case .boolean: "booleano"
-        case .number: "número"
-        case .empty: "vacío"
+        case .absent: "absent"
+        case .null: "null"
+        case .object: "object"
+        case .array: "list"
+        case .string: "text"
+        case .boolean: "boolean"
+        case .number: "number"
+        case .empty: "empty"
         case .html: "HTML"
-        case .invalidJSON: "no es JSON"
+        case .invalidJSON: "not JSON"
         }
     }
 }
@@ -297,10 +297,10 @@ struct DotProbeDiagnostic: Codable, Sendable, Equatable {
     }
 
     var summary: String {
-        let label = stage == "primary" ? "Dot primario" : "Sala del Dot"
-        let format = bodyKind == .object ? "JSON objeto" : bodyKind.label
+        let label = stage == "primary" ? "Primary Dot" : "Dot room"
+        let format = bodyKind == .object ? "JSON object" : bodyKind.label
         let selection = stage == "primary" && bodyKind == .object
-            ? " selection: \(fields["selection"]?.label ?? "ausente")." : ""
-        return "\(label): HTTP \(httpStatus), \(format).\(selection) Formato no compatible (D2.1)."
+            ? " selection: \(fields["selection"]?.label ?? "absent")." : ""
+        return "\(label): HTTP \(httpStatus), \(format).\(selection) Unsupported format (D2.1)."
     }
 }

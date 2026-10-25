@@ -347,7 +347,7 @@ final class ConversationSessionTests: XCTestCase {
         let session = ConversationSession(transport: transport)
         session.send("hola")
         await waitUntil { self.isFailed(session) }
-        XCTAssertEqual(session.deliveryState, .failed("El servicio rechazó la solicitud."))
+        XCTAssertEqual(session.deliveryState, .failed("The service rejected the request."))
     }
 
     func testInvalidReplyDoesNotBecomeAssistantConfirmation() async {
@@ -366,7 +366,7 @@ final class ConversationSessionTests: XCTestCase {
                                   messages: [ChatMessage(role: .user, text: "recuérdame mañana")])
         let reply = try await demo.send(request, onAccepted: {})
         XCTAssertFalse(demo.isRealConnection)
-        XCTAssertTrue(reply.text.contains("No se envió a Andy"))
+        XCTAssertTrue(reply.text.contains("Nothing was sent to your Dot"))
         XCTAssertEqual(reply.id, request.clientTurnID)
     }
 

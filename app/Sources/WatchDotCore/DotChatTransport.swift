@@ -17,18 +17,18 @@ public enum DotChatIssue: Sendable, Equatable {
     }
     var message: String {
         switch self {
-        case .session: "La sesión cambió o expiró. Vuelve a conectar la cuenta."
-        case .destination: "El Dot o su sala cambiaron. Envío detenido; verifica de nuevo el destino."
-        case .storage: "No se pudo guardar el comprobante de envío. Comprueba el almacenamiento."
-        case .notSubmitted: "Este turno no llegó a iniciar el envío. Puedes reintentarlo o descartarlo."
-        case .unconfirmed: "Entrega sin confirmar. Consultar respuesta solo lee la sala; no repite el envío."
-        case .unsupportedReply: "Andy respondió con contenido que el reloj aún no puede mostrar. Revisa su chat en ChatGPT."
-        case .replyHTTP(let status): "Mensaje enviado. Lectura: HTTP \(status). Usa Consultar respuesta."
-        case .invalidQuery(let field): "Lectura rechazada: parámetro \(field.rawValue) (HTTP 422). El envío no se repetirá."
-        case .http(let status): "Chat directo: HTTP \(status). Consulta detenida; el mensaje puede haber llegado."
-        case .rejected(let status): "OpenAI rechazó el envío (HTTP \(status)). No se envió el mensaje."
-        case .challenge(let status): "OpenAI exige una verificación del cliente (HTTP \(status)). Prueba detenida."
-        case .schema: "No se pudo interpretar la respuesta de Andy. Vuelve a intentar."
+        case .session: "The session changed or expired. Reconnect the account."
+        case .destination: "The Dot or its room changed. Sending stopped; verify the destination again."
+        case .storage: "Couldn't save the send receipt. Check storage."
+        case .notSubmitted: "This turn never started sending. You can retry or discard it."
+        case .unconfirmed: "Delivery unconfirmed. Checking for a reply only reads the room; it never resends."
+        case .unsupportedReply: "Your Dot replied with content the watch can't show yet. Check the chat in ChatGPT."
+        case .replyHTTP(let status): "Message sent. Read: HTTP \(status). Check for the reply again."
+        case .invalidQuery(let field): "Read rejected: parameter \(field.rawValue) (HTTP 422). The message won't be resent."
+        case .http(let status): "Direct chat: HTTP \(status). Check stopped; the message may have been delivered."
+        case .rejected(let status): "OpenAI rejected the send (HTTP \(status)). The message was not sent."
+        case .challenge(let status): "OpenAI requires client verification (HTTP \(status)). Check stopped."
+        case .schema: "Couldn't read your Dot's reply. Try again."
         }
     }
 }

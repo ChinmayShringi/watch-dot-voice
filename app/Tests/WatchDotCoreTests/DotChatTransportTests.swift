@@ -424,7 +424,7 @@ final class DotChatTransportTests: XCTestCase {
         XCTAssertTrue(connection.selectedConversation(demo: demo) === demo)
         connection.selectDemo(false)
         XCTAssertNil(connection.selectedConversation(demo: demo))
-        XCTAssertEqual(connection.chatBlockReason, "Falta verificar la sala de Andy.")
+        XCTAssertEqual(connection.chatBlockReason, "Your Dot's room isn't verified yet.")
     }
 
     func testExpiryBlocksChatInsteadOfSelectingDemoAndExposesReauthorization() async throws {
@@ -438,8 +438,8 @@ final class DotChatTransportTests: XCTestCase {
         now = chatNow.addingTimeInterval(7200)
         connection.refresh()
         XCTAssertEqual(connection.phase, .expired)
-        XCTAssertEqual(connection.chatBlockReason, "Sesión expirada")
-        XCTAssertEqual(connection.actionTitle, "Volver a autorizar")
+        XCTAssertEqual(connection.chatBlockReason, "Session expired")
+        XCTAssertEqual(connection.actionTitle, "Authorize again")
         XCTAssertNil(connection.selectedConversation(demo: demo))
         XCTAssertFalse(connection.demoEnabled)
     }

@@ -1,0 +1,1169 @@
+{
+ "upstream": "0ca53cc050017533e5ed8aef0436fc32e20f2ba1",
+ "replacements": [
+  {
+   "file": "PhoneDotApp/PhoneConnectionSession.swift",
+   "old": "\"Abre Watch Dot en tu Apple Watch para conectar.\"",
+   "new": "\"Open Watch Dot on your Apple Watch to connect.\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneConnectionSession.swift",
+   "old": "\"Conectando con el Apple Watch…\"",
+   "new": "\"Connecting to Apple Watch…\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneConnectionSession.swift",
+   "old": "\"Abre Watch Dot en el reloj y vuelve a intentar.\"",
+   "new": "\"Open Watch Dot on the watch and try again.\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneConnectionSession.swift",
+   "old": "\"Autoriza tu cuenta en el navegador del iPhone.\"",
+   "new": "\"Authorize your account in the iPhone browser.\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneConnectionSession.swift",
+   "old": "\"Cuenta autorizada. Entregando la sesión al Watch…\"",
+   "new": "\"Account authorized. Sending the session to the watch…\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneConnectionSession.swift",
+   "old": "\"Autorización cancelada.\"",
+   "new": "\"Authorization canceled.\"",
+   "count": 2
+  },
+  {
+   "file": "PhoneDotApp/PhoneConnectionSession.swift",
+   "old": "\"No se pudo autorizar. Vuelve a intentar.\"",
+   "new": "\"Couldn't authorize. Try again.\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneConnectionSession.swift",
+   "old": "\"La autorización expiró. Inicia un nuevo intento.\"",
+   "new": "\"Authorization expired. Start a new attempt.\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneConnectionSession.swift",
+   "old": "\"Solicitud recibida. Abre Watch Dot para autorizar.\"",
+   "new": "\"Request received. Open Watch Dot to authorize.\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneConnectionSession.swift",
+   "old": "\"Abre Watch Dot en tu iPhone para autorizar.\"",
+   "new": "\"Open Watch Dot on your iPhone to authorize.\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneConnectionSession.swift",
+   "old": "\"Entrega pendiente. Abre Watch Dot en el reloj y reintenta.\"",
+   "new": "\"Handoff pending. Open Watch Dot on the watch and retry.\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneConnectionSession.swift",
+   "old": "\"El reloj canceló o reemplazó este intento. Inicia otro login.\"",
+   "new": "\"The watch canceled or replaced this attempt. Start another sign-in.\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneConnectionSession.swift",
+   "old": "\"El reloj tiene su sesión. Para cambiar de cuenta, cierra sesión en el Watch.\"",
+   "new": "\"The watch already has its session. To switch accounts, sign out on the watch.\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneConnectionSession.swift",
+   "old": "\"Abre Watch Dot en el reloj y toca Continuar con ChatGPT.\"",
+   "new": "\"Open Watch Dot on the watch and tap Continue with ChatGPT.\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneConnectionSession.swift",
+   "old": "\"Sesión pendiente de entrega. Abre Watch Dot en el reloj y reintenta.\"",
+   "new": "\"Session waiting for handoff. Open Watch Dot on the watch and retry.\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneConnectionSession.swift",
+   "old": "\"Sesión guardada en el Apple Watch. El reloj renovará sus tokens por su cuenta.\"",
+   "new": "\"Session saved on Apple Watch. The watch will renew its tokens on its own.\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneDotApp.swift",
+   "old": "\"Watch Dot disponible\"",
+   "new": "\"Watch Dot available\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneDotApp.swift",
+   "old": "\"Esperando al reloj\"",
+   "new": "\"Waiting for the watch\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneDotApp.swift",
+   "old": "\"Instala Watch Dot desde la app Watch de tu iPhone.\"",
+   "new": "\"Install Watch Dot from the Watch app on your iPhone.\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneDotApp.swift",
+   "old": "\"Abre Watch Dot en tu Apple Watch y mantenlo cerca durante la autorización.\"",
+   "new": "\"Open Watch Dot on your Apple Watch and keep it nearby while you authorize.\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneDotApp.swift",
+   "old": "\"Cuenta de ChatGPT\"",
+   "new": "\"ChatGPT account\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneDotApp.swift",
+   "old": "\"Autorizando…\"",
+   "new": "\"Authorizing…\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneDotApp.swift",
+   "old": "\"Continuar con ChatGPT\"",
+   "new": "\"Continue with ChatGPT\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneDotApp.swift",
+   "old": "\"Cancelar autorización\"",
+   "new": "\"Cancel authorization\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneDotApp.swift",
+   "old": "\"El chat con Andy está en tu Apple Watch. Después del login, el reloj puede funcionar con su propia conexión a internet.\"",
+   "new": "\"The chat with your Dot lives on your Apple Watch. After sign-in, the watch can use its own internet connection.\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneOAuthBrowser.swift",
+   "old": "\"Vuelve a Watch Dot para continuar.\"",
+   "new": "\"Return to Watch Dot to continue.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Authentication.swift",
+   "old": "\"OpenAI ya no permite renovar esta sesión. Inicia sesión de nuevo.\"",
+   "new": "\"OpenAI no longer allows renewing this session. Sign in again.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Authentication.swift",
+   "old": "\"No se pudo renovar la sesión. Comprueba la conexión y vuelve a intentar.\"",
+   "new": "\"Couldn't renew the session. Check the connection and try again.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Authentication.swift",
+   "old": "\"No se pudo preparar la conexión segura. Abre Watch Dot en tu iPhone y vuelve a intentar.\"",
+   "new": "\"Couldn't prepare the secure connection. Open Watch Dot on your iPhone and try again.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Authentication.swift",
+   "old": "\"No se pudo acceder a Keychain. Desbloquea el dispositivo y vuelve a intentar.\"",
+   "new": "\"Couldn't access the Keychain. Unlock the device and try again.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Authentication.swift",
+   "old": "\"No se pudo preparar una autorización segura.\"",
+   "new": "\"Couldn't prepare a secure authorization.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Authentication.swift",
+   "old": "\"La respuesta de autorización no es válida. Inicia otro intento.\"",
+   "new": "\"The authorization response is invalid. Start another attempt.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Authentication.swift",
+   "old": "\"No se pudo verificar la identidad de OpenAI. No se guardó la sesión.\"",
+   "new": "\"Couldn't verify the OpenAI identity. The session was not saved.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Authentication.swift",
+   "old": "\"Autorización rechazada. Puedes iniciar otro intento.\"",
+   "new": "\"Authorization denied. You can start another attempt.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Authentication.swift",
+   "old": "\"La autorización expiró. Inicia sesión de nuevo.\"",
+   "new": "\"Authorization expired. Sign in again.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Authentication.swift",
+   "old": "\"Se interrumpió la validación. Inicia una autorización nueva.\"",
+   "new": "\"Validation was interrupted. Start a new authorization.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Authentication.swift",
+   "old": "\"OpenAI rechazó el cliente de esta autorización (invalid_client). No se inició sesión.\"",
+   "new": "\"OpenAI rejected this authorization's client (invalid_client). You were not signed in.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Authentication.swift",
+   "old": "\"No se pudo abrir el navegador. Abre Watch Dot en tu iPhone y vuelve a intentar.\"",
+   "new": "\"Couldn't open the browser. Open Watch Dot on your iPhone and try again.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Authentication.swift",
+   "old": "\"No se pudo contactar con el servicio. Comprueba la conexión y vuelve a intentar.\"",
+   "new": "\"Couldn't reach the service. Check the connection and try again.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Authentication.swift",
+   "old": "\"No se pudo verificar el certificado del servicio. Comprueba la conexión y vuelve a intentar.\"",
+   "new": "\"Couldn't verify the service certificate. Check the connection and try again.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/CompanionConnectivity.swift",
+   "old": "\"Abre Watch Dot para continuar.\"",
+   "new": "\"Open Watch Dot to continue.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Abre Watch Dot en tu iPhone\"",
+   "new": "\"Open Watch Dot on your iPhone\"",
+   "count": 2
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Sin sesión\"",
+   "new": "\"Signed out\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Conectando con el iPhone…\"",
+   "new": "\"Connecting to iPhone…\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Autoriza en tu iPhone\"",
+   "new": "\"Authorize on your iPhone\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Verificando cuenta…\"",
+   "new": "\"Verifying account…\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Autorización pausada\"",
+   "new": "\"Authorization paused\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Cuenta autorizada\"",
+   "new": "\"Account authorized\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Sesión expirada\"",
+   "new": "\"Session expired\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Autorización cancelada\"",
+   "new": "\"Authorization canceled\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"No se pudo conectar\"",
+   "new": "\"Couldn't connect\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Conectando con Andy…\"",
+   "new": "\"Connecting to your Dot…\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Conexión con Andy cancelada. Puedes reintentar.\"",
+   "new": "\"Connection to your Dot canceled. You can retry.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Falta verificar la sala de Andy.\"",
+   "new": "\"Your Dot's room isn't verified yet.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Reanudar autorización\"",
+   "new": "\"Resume authorization\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Renovar sesión\"",
+   "new": "\"Renew session\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Volver a autorizar\"",
+   "new": "\"Authorize again\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Continuar con ChatGPT\"",
+   "new": "\"Continue with ChatGPT\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Cuenta de ChatGPT\"",
+   "new": "\"ChatGPT account\"",
+   "count": 3
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"El reloj ya tiene sesión. Cierra sesión en el Watch para cambiar de cuenta.\"",
+   "new": "\"The watch is already signed in. Sign out on the watch to switch accounts.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Abre Watch Dot en tu iPhone y toca Continuar con ChatGPT.\"",
+   "new": "\"Open Watch Dot on your iPhone and tap Continue with ChatGPT.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/ConnectionSession.swift",
+   "old": "\"Prueba interrumpida. Puedes repetirla.\"",
+   "new": "\"Check interrupted. You can run it again.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"es_ES\"",
+   "new": "\"en_US_POSIX\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"Conexión interrumpida. El mensaje podría haber llegado.\"",
+   "new": "\"Connection interrupted. The message may have been delivered.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"Sin respuesta a tiempo. El mensaje podría haber llegado.\"",
+   "new": "\"No reply in time. The message may have been delivered.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"Debes volver a autorizar la conexión.\"",
+   "new": "\"You need to authorize the connection again.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"La respuesta no es válida para este turno.\"",
+   "new": "\"The reply isn't valid for this turn.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"El servicio rechazó la solicitud.\"",
+   "new": "\"The service rejected the request.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"Recepción pendiente. Se sincronizará al volver al chat.\"",
+   "new": "\"Reply pending. It will sync when you return to the chat.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"Turno pendiente recuperado. Reanuda para comprobar su respuesta.\"",
+   "new": "\"Recovered a pending turn. Resume to check for its reply.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"No se pudo leer el historial. Se conserva el archivo; vuelve a abrir la app.\"",
+   "new": "\"Couldn't read the history. The file was kept; reopen the app.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"Espera pausada. Se retomará al abrir el chat.\"",
+   "new": "\"Waiting paused. It will resume when you open the chat.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"Conexión recuperada. Reanuda el mismo mensaje.\"",
+   "new": "\"Connection restored. Resume the same message.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"Guarda el historial antes de reanudar.\"",
+   "new": "\"Save the history before resuming.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"Mensaje enviado. Recuperando la respuesta al reconectar…\"",
+   "new": "\"Message sent. Fetching the reply on reconnect…\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"No se pudo leer la respuesta.\"",
+   "new": "\"Couldn't read the reply.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"No se pudo completar el turno. Comprueba la conexión.\"",
+   "new": "\"Couldn't complete the turn. Check the connection.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"No se pudo guardar el chat. Libera espacio y vuelve a guardar.\"",
+   "new": "\"Couldn't save the chat. Free up space and save again.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"No se pudo recuperar el chat guardado. Se conserva el archivo; vuelve a abrir la app.\"",
+   "new": "\"Couldn't restore the saved chat. The file was kept; reopen the app.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"No se pudo sincronizar. Se conserva el chat guardado.\"",
+   "new": "\"Couldn't sync. The saved chat was kept.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"No se pudo completar la actualización adicional. Desliza hacia arriba para sincronizar.\"",
+   "new": "\"Couldn't finish the extra refresh. Swipe up to sync.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"Demostración local\"",
+   "new": "\"Local demo\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/Conversation.swift",
+   "old": "\"Demo: mensaje recibido. No se envió a Andy ni se creó una tarea o recordatorio.\"",
+   "new": "\"Demo: message received. Nothing was sent to your Dot and no task or reminder was created.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"Dot primario\"",
+   "new": "\"Primary Dot\"",
+   "count": 2
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"Sala del Dot\"",
+   "new": "\"Dot room\"",
+   "count": 2
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"Envío al Dot\"",
+   "new": "\"Send to Dot\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"Respuesta del Dot\"",
+   "new": "\"Dot reply\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"La sesión no permite esta prueba o ha expirado. Vuelve a autorizar la cuenta.\"",
+   "new": "\"The session doesn't allow this check or has expired. Authorize the account again.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"La sesión no contiene los datos de cuenta necesarios para esta prueba.\"",
+   "new": "\"The session doesn't contain the account data this check needs.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"OpenAI no devolvió un Dot primario para esta cuenta.\"",
+   "new": "\"OpenAI returned no primary Dot for this account.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"El Dot primario no está disponible o aún no tiene sala.\"",
+   "new": "\"The primary Dot is unavailable or has no room yet.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"La sala recibida no coincide con el Dot primario. Prueba detenida.\"",
+   "new": "\"The returned room doesn't match the primary Dot. Check stopped.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"No se pudo verificar tu membresía y la del Dot en esta sala. Prueba detenida.\"",
+   "new": "\"Couldn't verify your and the Dot's membership in this room. Check stopped.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"El servicio devolvió un identificador vacío, excesivo o no utilizable. Prueba detenida.\"",
+   "new": "\"The service returned an empty, oversized or unusable identifier. Check stopped.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"ausente\"",
+   "new": "\"absent\"",
+   "count": 2
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"nulo\"",
+   "new": "\"null\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"objeto\"",
+   "new": "\"object\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"lista\"",
+   "new": "\"list\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"texto\"",
+   "new": "\"text\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"booleano\"",
+   "new": "\"boolean\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"número\"",
+   "new": "\"number\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"vacío\"",
+   "new": "\"empty\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"no es JSON\"",
+   "new": "\"not JSON\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\"JSON objeto\"",
+   "new": "\"JSON object\"",
+   "count": 1
+  },
+  {
+   "file": "PhoneDotApp/PhoneDotApp.swift",
+   "old": "\"Versión \\(",
+   "new": "\"Version \\(",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\\(stage.rawValue): HTTP \\(status), verificación del servicio requerida. Prueba detenida.\"",
+   "new": "\\(stage.rawValue): HTTP \\(status), service verification required. Check stopped.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\\(stage.rawValue): respuesta no reconocida. Prueba detenida.\"",
+   "new": "\\(stage.rawValue): unrecognized response. Check stopped.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\\(stage.rawValue): no se pudo completar la conexión. Puedes repetir la prueba.\"",
+   "new": "\\(stage.rawValue): couldn't complete the connection. You can run the check again.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "\\(stage.rawValue): no se pudo verificar la conexión segura.\"",
+   "new": "\\(stage.rawValue): couldn't verify the secure connection.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "HTTP 401. OpenAI no aceptó esta sesión.\"",
+   "new": "HTTP 401. OpenAI didn't accept this session.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "HTTP 403. Acceso rechazado; no se intentará eludir verificaciones.\"",
+   "new": "HTTP 403. Access denied; no attempt will be made to bypass checks.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "HTTP 429. Límite del servicio; espera antes de repetir.\"",
+   "new": "HTTP 429. Service limit reached; wait before trying again.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": "HTTP \\(status). Prueba detenida.\"",
+   "new": "HTTP \\(status). Check stopped.\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotAccessProbe.swift",
+   "old": " Formato no compatible (D2.1).\"",
+   "new": " Unsupported format (D2.1).\"",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotChatTransport.swift",
+   "old": "La sesión cambió o expiró. Vuelve a conectar la cuenta.",
+   "new": "The session changed or expired. Reconnect the account.",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotChatTransport.swift",
+   "old": "El Dot o su sala cambiaron. Envío detenido; verifica de nuevo el destino.",
+   "new": "The Dot or its room changed. Sending stopped; verify the destination again.",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotChatTransport.swift",
+   "old": "No se pudo guardar el comprobante de envío. Comprueba el almacenamiento.",
+   "new": "Couldn't save the send receipt. Check storage.",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotChatTransport.swift",
+   "old": "Este turno no llegó a iniciar el envío. Puedes reintentarlo o descartarlo.",
+   "new": "This turn never started sending. You can retry or discard it.",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotChatTransport.swift",
+   "old": "Entrega sin confirmar. Consultar respuesta solo lee la sala; no repite el envío.",
+   "new": "Delivery unconfirmed. Checking for a reply only reads the room; it never resends.",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotChatTransport.swift",
+   "old": "Andy respondió con contenido que el reloj aún no puede mostrar. Revisa su chat en ChatGPT.",
+   "new": "Your Dot replied with content the watch can't show yet. Check the chat in ChatGPT.",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotChatTransport.swift",
+   "old": "Mensaje enviado. Lectura: HTTP \\(status). Usa Consultar respuesta.",
+   "new": "Message sent. Read: HTTP \\(status). Check for the reply again.",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotChatTransport.swift",
+   "old": "Lectura rechazada: parámetro \\(field.rawValue) (HTTP 422). El envío no se repetirá.",
+   "new": "Read rejected: parameter \\(field.rawValue) (HTTP 422). The message won't be resent.",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotChatTransport.swift",
+   "old": "Chat directo: HTTP \\(status). Consulta detenida; el mensaje puede haber llegado.",
+   "new": "Direct chat: HTTP \\(status). Check stopped; the message may have been delivered.",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotChatTransport.swift",
+   "old": "OpenAI rechazó el envío (HTTP \\(status)). No se envió el mensaje.",
+   "new": "OpenAI rejected the send (HTTP \\(status)). The message was not sent.",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotChatTransport.swift",
+   "old": "OpenAI exige una verificación del cliente (HTTP \\(status)). Prueba detenida.",
+   "new": "OpenAI requires client verification (HTTP \\(status)). Check stopped.",
+   "count": 1
+  },
+  {
+   "file": "Sources/WatchDotCore/DotChatTransport.swift",
+   "old": "No se pudo interpretar la respuesta de Andy. Vuelve a intentar.",
+   "new": "Couldn't read your Dot's reply. Try again.",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Mensaje de prueba.\"",
+   "new": "\"Test message.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Estoy probando el espacio del chat en el reloj.\"",
+   "new": "\"I'm testing the chat layout on the watch.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Vista de demostración. Aquí se mostrarán los mensajes del chat.\"",
+   "new": "\"Demo view. Chat messages will appear here.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Vista previa local\"",
+   "new": "\"Local preview\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Consulta local \\(reads): mensajes actualizados.\"",
+   "new": "\"Local check \\(reads): messages updated.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Vista previa de sincronización: sin envíos.\"",
+   "new": "\"Sync preview: sending disabled.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Ver conexión\"",
+   "new": "\"View connection\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Conectar con Andy\"",
+   "new": "\"Connect to your Dot\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "?? \"Andy\"",
+   "new": "?? \"Dot\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"\\(name), detalles de conexión\"",
+   "new": "\"\\(name), connection details\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Sala verificada. Envía un mensaje a Andy; la primera respuesta confirmará la conexión completa.\"",
+   "new": "\"Room verified. Send your Dot a message; the first reply confirms the full connection.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Demo local, sin conexión a Andy. Toca ⓘ para conectar.\"",
+   "new": "\"Local demo, not connected to your Dot. Tap ⓘ to connect.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Volver a guardar\"",
+   "new": "\"Save again\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Consultando mensajes nuevos\"",
+   "new": "\"Checking for new messages\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Suelta para refrescar\"",
+   "new": "\"Release to refresh\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Desliza hacia arriba para refrescar\"",
+   "new": "\"Swipe up to refresh\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Sincronizar mensajes\"",
+   "new": "\"Sync messages\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "TextField(\"Mensaje\",",
+   "new": "TextField(\"Message\",",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Mensaje: dictado o teclado nativo\"",
+   "new": "\"Message: dictation or native keyboard\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Enviar mensaje al Dot\"",
+   "new": "\"Send message to Dot\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Enviar mensaje de demostración\"",
+   "new": "\"Send demo message\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Sincronizando…\"",
+   "new": "\"Syncing…\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Refresca para ver mensajes desde otros clientes de tu Dot\"",
+   "new": "\"Refresh to see messages from your Dot's other clients\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Conectando con Andy…\"",
+   "new": "\"Connecting to your Dot…\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Esperando a Andy…\"",
+   "new": "\"Waiting for your Dot…\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Enviando demo…\"",
+   "new": "\"Sending demo…\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Esperando demo…\"",
+   "new": "\"Waiting for demo…\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Sin conexión. El mensaje sigue pendiente.\"",
+   "new": "\"Offline. The message is still pending.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Sin conexión (simulada). El mensaje sigue pendiente.\"",
+   "new": "\"Offline (simulated). The message is still pending.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Espera cancelada. No confirma una cancelación en el servicio.\"",
+   "new": "\"Wait canceled. This doesn't confirm a cancellation on the service.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Reanudar mensaje\"",
+   "new": "\"Resume message\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Descartar no enviado\"",
+   "new": "\"Discard unsent\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Descartar demo\"",
+   "new": "\"Discard demo\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Abre Watch Dot en tu iPhone y completa la autorización en el navegador. La sesión llegará al reloj automáticamente.\"",
+   "new": "\"Open Watch Dot on your iPhone and finish authorizing in the browser. The session will reach the watch automatically.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Renovando sesión…\"",
+   "new": "\"Renewing session…\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Cancelar autorización\"",
+   "new": "\"Cancel authorization\"",
+   "count": 2
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"El punto verde indica cuenta autorizada. El chat directo sigue siendo experimental.\"",
+   "new": "\"A green dot means the account is authorized. Direct chat is still experimental.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Autoriza tu cuenta desde Watch Dot en tu iPhone. El chat con Andy se ejecuta en el reloj.\"",
+   "new": "\"Authorize your account from Watch Dot on your iPhone. The chat with your Dot runs on the watch.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Renovación automática activada.\"",
+   "new": "\"Automatic renewal on.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Autoriza una vez más para activar la renovación automática de esta sesión.\"",
+   "new": "\"Authorize once more to turn on automatic renewal for this session.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Activar renovación automática\"",
+   "new": "\"Turn on automatic renewal\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Cerrar sesión local\"",
+   "new": "\"Sign out on this watch\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Mensajes al sincronizar\"",
+   "new": "\"Messages per sync\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Consulta mientras espera tu respuesta y una vez más al minuto. Al abrir solo muestra lo guardado. Al final del chat, desliza hacia arriba hasta que el icono cambie de color y suelta para sincronizar. watchOS puede aplazar la recepción.\"",
+   "new": "\"Checks while waiting for your reply and once more after a minute. Opening the app only shows what's saved. At the end of the chat, swipe up until the icon changes color, then release to sync. watchOS may delay delivery.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Volver al chat\"",
+   "new": "\"Back to chat\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Chat directo · experimental D4\"",
+   "new": "\"Direct chat · experimental D4\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Consultando OpenAI…\"",
+   "new": "\"Checking OpenAI…\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Cancelar prueba\"",
+   "new": "\"Cancel check\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Probar acceso a Andy\"",
+   "new": "\"Test access to your Dot\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Consulta tu Dot primario y su sala desde el reloj. Solo lectura, directamente desde el reloj.\"",
+   "new": "\"Looks up your primary Dot and its room. Read-only, directly from the watch.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Prueba cancelada. Puedes repetirla.\"",
+   "new": "\"Check canceled. You can run it again.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Dot primario: \\(dot.name ?? \"sin nombre visible\"). Sala y miembros verificados.\"",
+   "new": "\"Primary Dot: \\(dot.name ?? \"no visible name\"). Room and members verified.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Envío y respuesta de Andy verificados.\"",
+   "new": "\"Send and reply with your Dot verified.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Chat directo habilitado. Vuelve al chat y envía un mensaje para verificar la respuesta de Andy.\"",
+   "new": "\"Direct chat enabled. Go back to the chat and send a message to verify your Dot's reply.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Sala verificada. Preparando el chat directo…\"",
+   "new": "\"Room verified. Preparing direct chat…\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Pendiente\"",
+   "new": "\"Pending\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "? \"Tú\" :",
+   "new": "? \"You\" :",
+   "count": 1
+  },
+  {
+   "file": "WatchDotApp/WatchDotApp.swift",
+   "old": "\"Mensaje recibido\"",
+   "new": "\"Message received\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotComplication/WatchDotComplication.swift",
+   "old": "\"Abrir Watch Dot\"",
+   "new": "\"Open Watch Dot\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotComplication/WatchDotComplication.swift",
+   "old": "\"Abre el chat con Andy.\"",
+   "new": "\"Opens the chat with your Dot.\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotComplication/WatchDotComplication.swift",
+   "old": "#Preview(\"Esquina\"",
+   "new": "#Preview(\"Corner\"",
+   "count": 1
+  },
+  {
+   "file": "WatchDotComplication/WatchDotComplication.swift",
+   "old": "#Preview(\"Icono con redacción del sistema\")",
+   "new": "#Preview(\"Icon with system redaction\")",
+   "count": 1
+  },
+  {
+   "file": "Tests/WatchDotCoreTests/ConversationSessionTests.swift",
+   "old": ".failed(\"El servicio rechazó la solicitud.\")",
+   "new": ".failed(\"The service rejected the request.\")",
+   "count": 1
+  },
+  {
+   "file": "Tests/WatchDotCoreTests/ConversationSessionTests.swift",
+   "old": "contains(\"No se envió a Andy\")",
+   "new": "contains(\"Nothing was sent to your Dot\")",
+   "count": 1
+  },
+  {
+   "file": "Tests/WatchDotCoreTests/DotChatTransportTests.swift",
+   "old": "\"Falta verificar la sala de Andy.\"",
+   "new": "\"Your Dot's room isn't verified yet.\"",
+   "count": 1
+  },
+  {
+   "file": "Tests/WatchDotCoreTests/DotChatTransportTests.swift",
+   "old": "\"Sesión expirada\"",
+   "new": "\"Session expired\"",
+   "count": 1
+  },
+  {
+   "file": "Tests/WatchDotCoreTests/DotChatTransportTests.swift",
+   "old": "\"Volver a autorizar\"",
+   "new": "\"Authorize again\"",
+   "count": 1
+  },
+  {
+   "file": "Tests/WatchDotCoreTests/ChatMessageTimestampTests.swift",
+   "old": "\"oct-04 09:05\")\n    }\n}",
+   "new": "\"oct-04 09:05\")\n    }\n\n    func testMonthAbbreviationIsEnglishRegardlessOfDeviceLocale() throws {\n        // Spanish would render \"ene\" and \"ago\"; labels always use English month names.\n        let now = try date(\"2026-10-04T21:30:00Z\")\n        let january = ChatMessage(role: .user, text: \"Message\", createdAt: try date(\"2026-01-07T15:00:00Z\"))\n        let august = ChatMessage(role: .user, text: \"Message\", createdAt: try date(\"2026-08-07T15:00:00Z\"))\n        XCTAssertEqual(january.timestampLabel(relativeTo: now, calendar: calendar,\n            locale: Locale(identifier: \"es_CL@hours=h23\")), \"jan-07 12:00\")\n        XCTAssertEqual(august.timestampLabel(relativeTo: now, calendar: calendar,\n            locale: Locale(identifier: \"es_CL@hours=h23\")), \"aug-07 12:00\")\n    }\n}",
+   "count": 1
+  }
+ ]
+}

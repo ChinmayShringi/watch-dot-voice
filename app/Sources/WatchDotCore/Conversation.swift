@@ -59,7 +59,7 @@ public struct ChatMessage: Identifiable, Sendable, Equatable, Codable {
             locale: locale, calendar: calendar, timeZone: calendar.timeZone))
         guard calendar.startOfDay(for: createdAt) < calendar.startOfDay(for: now) else { return time }
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "es_ES")
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
         formatter.dateFormat = "MMM-dd"
@@ -87,11 +87,11 @@ public enum ChatTransportError: Error, Sendable, Equatable {
 
     public var userMessage: String {
         switch self {
-        case .unavailable: "Conexión interrumpida. El mensaje podría haber llegado."
-        case .timedOut: "Sin respuesta a tiempo. El mensaje podría haber llegado."
-        case .authenticationRequired: "Debes volver a autorizar la conexión."
-        case .invalidResponse: "La respuesta no es válida para este turno."
-        case .rejected: "El servicio rechazó la solicitud."
+        case .unavailable: "Connection interrupted. The message may have been delivered."
+        case .timedOut: "No reply in time. The message may have been delivered."
+        case .authenticationRequired: "You need to authorize the connection again."
+        case .invalidResponse: "The reply isn't valid for this turn."
+        case .rejected: "The service rejected the request."
         case .direct(let issue): issue.message
         }
     }
@@ -186,7 +186,7 @@ public final class FileConversationStore: ConversationStore {
 
 @MainActor
 public final class ConversationSession: ObservableObject {
-    public static let backgroundReceptionPendingMessage = "Recepción pendiente. Se sincronizará al volver al chat."
+    public static let backgroundReceptionPendingMessage = "Reply pending. It will sync when you return to the chat."
     @Published public private(set) var messages: [ChatMessage] = []
     @Published public private(set) var deliveryState: DeliveryState = .idle
     @Published public private(set) var showsCancellationNotice = false
@@ -272,13 +272,13 @@ public final class ConversationSession: ObservableObject {
                 if pendingRequest != nil || !awaitingReplies.isEmpty {
                     switch deliveryState {
                     case .failed, .cancelled: break
-                    default: deliveryState = .failed("Turno pendiente recuperado. Reanuda para comprobar su respuesta.")
+                    default: deliveryState = .failed("Recovered a pending turn. Resume to check for its reply.")
                     }
                 }
             }
         } catch {
             loadFailed = true
-            storageIssue = "No se pudo leer el historial. Se conserva el archivo; vuelve a abrir la app."
+            storageIssue = "Couldn't read the history. The file was kept; reopen the app."
         }
     }
 
@@ -388,7 +388,7 @@ public final class ConversationSession: ObservableObject {
         stopReplyOperations()
         guard deliveryState.isActive else { return }
         invalidateAttempt()
-        deliveryState = .failed("Espera pausada. Se retomará al abrir el chat.")
+        deliveryState = .failed("Waiting paused. It will resume when you open the chat.")
         _ = persist()
     }
 
@@ -412,7 +412,7 @@ public final class ConversationSession: ObservableObject {
             _ = persist()
         } else if available && deliveryState == .waitingForConnection {
             // Explicit retry: reconnecting never silently replays a task/reminder request.
-            deliveryState = .failed("Conexión recuperada. Reanuda el mismo mensaje.")
+            deliveryState = .failed("Connection restored. Resume the same message.")
             _ = persist()
         }
     }
@@ -433,7 +433,7 @@ public final class ConversationSession: ObservableObject {
         hasAttemptedDelivery = true
         guard persist() else {
             hasAttemptedDelivery = previouslyAttempted
-            deliveryState = .failed("Guarda el historial antes de reanudar.")
+            deliveryState = .failed("Save the history before resuming.")
             return
         }
         let generation = UUID()
@@ -515,8 +515,8 @@ public final class ConversationSession: ObservableObject {
             if pendingRequest == nil {
                 let retryable = error as? ChatTransportError == .unavailable || error as? ChatTransportError == .timedOut
                 deliveryState = .failed(retryable
-                    ? "Mensaje enviado. Recuperando la respuesta al reconectar…"
-                    : (error as? ChatTransportError)?.userMessage ?? "No se pudo leer la respuesta.")
+                    ? "Message sent. Fetching the reply on reconnect…"
+                    : (error as? ChatTransportError)?.userMessage ?? "Couldn't read the reply.")
             }
             _ = persist()
             scheduleReadRecovery(error)
@@ -528,7 +528,7 @@ public final class ConversationSession: ObservableObject {
             hasAttemptedDelivery = false
         }
         // Do not display arbitrary server errors: they may contain tokens, URLs or private payloads.
-        deliveryState = .failed((error as? ChatTransportError)?.userMessage ?? "No se pudo completar el turno. Comprueba la conexión.")
+        deliveryState = .failed((error as? ChatTransportError)?.userMessage ?? "Couldn't complete the turn. Check the connection.")
         _ = persist()
         scheduleReadRecovery(error)
     }
@@ -552,7 +552,7 @@ public final class ConversationSession: ObservableObject {
             storageIssue = nil
             return true
         } catch {
-            storageIssue = "No se pudo guardar el chat. Libera espacio y vuelve a guardar."
+            storageIssue = "Couldn't save the chat. Free up space and save again."
             return false
         }
     }
@@ -572,7 +572,7 @@ public final class ConversationSession: ObservableObject {
             for turn in saved.pendingTurns { outgoingMessageIDs[turn.clientTurnID] = turn.messages.last?.id }
         } catch {
             loadFailed = true
-            storageIssue = "No se pudo recuperar el chat guardado. Se conserva el archivo; vuelve a abrir la app."
+            storageIssue = "Couldn't restore the saved chat. The file was kept; reopen the app."
         }
     }
 
@@ -603,7 +603,7 @@ public final class ConversationSession: ObservableObject {
             } catch {
                 guard let self, !Task.isCancelled else { return }
                 self.synchronizationIssue = (error as? ChatTransportError)?.userMessage
-                    ?? "No se pudo sincronizar. Se conserva el chat guardado."
+                    ?? "Couldn't sync. The saved chat was kept."
             }
             self?.isSynchronizing = false
             self?.syncTask = nil
@@ -639,7 +639,7 @@ public final class ConversationSession: ObservableObject {
                     limit: ChatHistorySettings.limit, at: self.now()).messages
             } catch {
                 guard !Task.isCancelled, self.followUpUntil == due else { return }
-                self.synchronizationIssue = "No se pudo completar la actualización adicional. Desliza hacia arriba para sincronizar."
+                self.synchronizationIssue = "Couldn't finish the extra refresh. Swipe up to sync."
             }
             // One attempt only; no periodic polling or retry loop after a reply.
             self.followUpUntil = nil
@@ -652,7 +652,7 @@ public final class ConversationSession: ObservableObject {
 
 /// Local-only sample. Deterministic reply IDs also survive process restarts and retries.
 public struct DemoChatTransport: ChatTransport {
-    public let displayName = "Demostración local"
+    public let displayName = "Local demo"
     public let isRealConnection = false
     public let supportsIdempotentRetry = true
     public init() {}
@@ -663,6 +663,6 @@ public struct DemoChatTransport: ChatTransport {
         try await Task.sleep(for: .milliseconds(900))
         try Task.checkCancellation()
         return ChatMessage(id: request.clientTurnID, role: .assistant,
-                           text: "Demo: mensaje recibido. No se envió a Andy ni se creó una tarea o recordatorio.")
+                           text: "Demo: message received. Nothing was sent to your Dot and no task or reminder was created.")
     }
 }

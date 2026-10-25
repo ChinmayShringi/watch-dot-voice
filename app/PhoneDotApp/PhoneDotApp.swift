@@ -23,27 +23,27 @@ private struct PhoneConnectionView: View {
         NavigationStack {
             List {
                 Section("Apple Watch") {
-                    Label(connectivity.reachable ? "Watch Dot disponible" : "Esperando al reloj",
+                    Label(connectivity.reachable ? "Watch Dot available" : "Waiting for the watch",
                           systemImage: connectivity.reachable ? "applewatch.radiowaves.left.and.right" : "applewatch")
                     if !connectivity.counterpartInstalled {
-                        Text("Instala Watch Dot desde la app Watch de tu iPhone.")
+                        Text("Install Watch Dot from the Watch app on your iPhone.")
                     } else if !connectivity.reachable {
-                        Text("Abre Watch Dot en tu Apple Watch y mantenlo cerca durante la autorización.")
+                        Text("Open Watch Dot on your Apple Watch and keep it nearby while you authorize.")
                     }
                 }
-                Section("Cuenta de ChatGPT") {
+                Section("ChatGPT account") {
                     Text(connection.status)
-                    Text("Versión \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") · \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "")")
+                    Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") · \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "")")
                         .font(.caption).foregroundStyle(.secondary)
-                    if connection.busy { ProgressView("Autorizando…") }
-                    Button("Continuar con ChatGPT", action: connection.start)
+                    if connection.busy { ProgressView("Authorizing…") }
+                    Button("Continue with ChatGPT", action: connection.start)
                         .disabled(connection.busy || !connectivity.reachable)
                     if connection.busy || !connection.authorized {
-                        Button("Cancelar autorización", role: .cancel, action: connection.cancel)
+                        Button("Cancel authorization", role: .cancel, action: connection.cancel)
                     }
                 }
                 Section {
-                    Text("El chat con Andy está en tu Apple Watch. Después del login, el reloj puede funcionar con su propia conexión a internet.")
+                    Text("The chat with your Dot lives on your Apple Watch. After sign-in, the watch can use its own internet connection.")
                 }
             }
             .navigationTitle("Watch Dot")

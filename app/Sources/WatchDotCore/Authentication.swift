@@ -16,20 +16,20 @@ public enum SignInError: Error, Sendable {
 
     public var message: String {
         switch self {
-        case .refreshRejected: "OpenAI ya no permite renovar esta sesión. Inicia sesión de nuevo."
-        case .refreshUnavailable: "No se pudo renovar la sesión. Comprueba la conexión y vuelve a intentar."
-        case .configuration: "No se pudo preparar la conexión segura. Abre Watch Dot en tu iPhone y vuelve a intentar."
-        case .storage: "No se pudo acceder a Keychain. Desbloquea el dispositivo y vuelve a intentar."
-        case .random: "No se pudo preparar una autorización segura."
-        case .invalidResponse: "La respuesta de autorización no es válida. Inicia otro intento."
-        case .identity: "No se pudo verificar la identidad de OpenAI. No se guardó la sesión."
-        case .denied: "Autorización rechazada. Puedes iniciar otro intento."
-        case .expired: "La autorización expiró. Inicia sesión de nuevo."
-        case .exchangeUncertain: "Se interrumpió la validación. Inicia una autorización nueva."
-        case .clientUnavailable: "OpenAI rechazó el cliente de esta autorización (invalid_client). No se inició sesión."
-        case .browser: "No se pudo abrir el navegador. Abre Watch Dot en tu iPhone y vuelve a intentar."
-        case .unavailable: "No se pudo contactar con el servicio. Comprueba la conexión y vuelve a intentar."
-        case .tls: "No se pudo verificar el certificado del servicio. Comprueba la conexión y vuelve a intentar."
+        case .refreshRejected: "OpenAI no longer allows renewing this session. Sign in again."
+        case .refreshUnavailable: "Couldn't renew the session. Check the connection and try again."
+        case .configuration: "Couldn't prepare the secure connection. Open Watch Dot on your iPhone and try again."
+        case .storage: "Couldn't access the Keychain. Unlock the device and try again."
+        case .random: "Couldn't prepare a secure authorization."
+        case .invalidResponse: "The authorization response is invalid. Start another attempt."
+        case .identity: "Couldn't verify the OpenAI identity. The session was not saved."
+        case .denied: "Authorization denied. You can start another attempt."
+        case .expired: "Authorization expired. Sign in again."
+        case .exchangeUncertain: "Validation was interrupted. Start a new authorization."
+        case .clientUnavailable: "OpenAI rejected this authorization's client (invalid_client). You were not signed in."
+        case .browser: "Couldn't open the browser. Open Watch Dot on your iPhone and try again."
+        case .unavailable: "Couldn't reach the service. Check the connection and try again."
+        case .tls: "Couldn't verify the service certificate. Check the connection and try again."
         }
     }
 }

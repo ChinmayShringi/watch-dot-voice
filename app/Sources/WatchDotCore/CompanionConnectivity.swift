@@ -103,7 +103,7 @@ extension CompanionConnectivity: WCSessionDelegate {
             let message: CompanionMessage
             do {
                 let decoded = try CompanionEnvelope.decode(data)
-                message = await self?.receive?(decoded) ?? .failure("Abre Watch Dot para continuar.")
+                message = await self?.receive?(decoded) ?? .failure("Open Watch Dot to continue.")
             } catch { message = .failure(SignInError.invalidResponse.message) }
             if let encoded = try? CompanionEnvelope(message).encoded() { reply.call(encoded) }
         }

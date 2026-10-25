@@ -34,4 +34,15 @@ final class ChatMessageTimestampTests: XCTestCase {
         XCTAssertEqual(message.timestampLabel(relativeTo: try date("2026-10-04T21:30:00Z"),
             calendar: calendar, locale: Locale(identifier: "es_CL@hours=h23")), "oct-04 09:05")
     }
+
+    func testMonthAbbreviationIsEnglishRegardlessOfDeviceLocale() throws {
+        // Spanish would render "ene" and "ago"; labels always use English month names.
+        let now = try date("2026-10-04T21:30:00Z")
+        let january = ChatMessage(role: .user, text: "Message", createdAt: try date("2026-01-07T15:00:00Z"))
+        let august = ChatMessage(role: .user, text: "Message", createdAt: try date("2026-08-07T15:00:00Z"))
+        XCTAssertEqual(january.timestampLabel(relativeTo: now, calendar: calendar,
+            locale: Locale(identifier: "es_CL@hours=h23")), "jan-07 12:00")
+        XCTAssertEqual(august.timestampLabel(relativeTo: now, calendar: calendar,
+            locale: Locale(identifier: "es_CL@hours=h23")), "aug-07 12:00")
+    }
 }

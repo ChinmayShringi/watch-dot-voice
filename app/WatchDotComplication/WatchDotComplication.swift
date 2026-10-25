@@ -78,7 +78,7 @@ private struct LauncherIcon: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .privacySensitive(false)
         .unredacted()
-        .accessibilityLabel("Abrir Watch Dot")
+        .accessibilityLabel("Open Watch Dot")
         .containerBackground(.clear, for: .widget)
     }
 
@@ -103,7 +103,7 @@ struct WatchDotComplication: Widget {
             LauncherIcon(appIcon: entry.icon)
         }
         .configurationDisplayName("Watch Dot")
-        .description("Abre el chat con Andy.")
+        .description("Opens the chat with your Dot.")
         .supportedFamilies([.accessoryCircular, .accessoryCorner])
         .contentMarginsDisabled()
     }
@@ -115,13 +115,13 @@ struct WatchDotComplication: Widget {
     LauncherEntry(date: .now)
 }
 
-#Preview("Esquina", as: .accessoryCorner) {
+#Preview("Corner", as: .accessoryCorner) {
     WatchDotComplication()
 } timeline: {
     LauncherEntry(date: .now)
 }
 
-#Preview("Icono con redacción del sistema") {
+#Preview("Icon with system redaction") {
     LauncherIcon(appIcon: LauncherEntry(date: .now).icon)
         .frame(width: 50, height: 50)
         .redacted(reason: .placeholder)

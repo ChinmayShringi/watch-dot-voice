@@ -4,7 +4,7 @@ import Combine
 @MainActor
 final class PhoneConnectionSession: ObservableObject {
     let connectivity = CompanionConnectivity()
-    @Published private(set) var status = "Abre Watch Dot en tu Apple Watch para conectar."
+    @Published private(set) var status = "Open Watch Dot on your Apple Watch to connect."
     @Published private(set) var busy = false
     @Published private(set) var authorized = false
     private let vault = PhoneTransferVault()
@@ -37,7 +37,7 @@ final class PhoneConnectionSession: ObservableObject {
         if pending != nil { recover(); return }
         busy = true
         authorized = false
-        status = "Conectando con el Apple Watch…"
+        status = "Connecting to Apple Watch…"
         let operation = UUID(); self.operation = operation
         task = Task { [weak self] in
             guard let self else { return }
@@ -46,7 +46,7 @@ final class PhoneConnectionSession: ObservableObject {
                 guard self.operation == operation else { return }
                 guard case .begin(let request) = response else {
                     if case .failure(let reason) = response { status = reason }
-                    else { status = "Abre Watch Dot en el reloj y vuelve a intentar." }
+                    else { status = "Open Watch Dot on the watch and try again." }
                     busy = false; task = nil; return
                 }
                 try await authorize(request, operation: operation)
@@ -67,20 +67,20 @@ final class PhoneConnectionSession: ObservableObject {
         try request.validate(now: .now)
         self.request = request
         scheduleExpiry(request)
-        status = "Autoriza tu cuenta en el navegador del iPhone."
+        status = "Authorize your account in the iPhone browser."
         let account = try await browser.authorize(request)
         guard self.operation == operation, self.request == request else { throw CancellationError() }
         let transfer = PhoneCredentialTransfer(request: request, account: account)
         try vault.save(transfer)
         pending = transfer
         busy = false; task = nil
-        status = "Cuenta autorizada. Entregando la sesión al Watch…"
+        status = "Account authorized. Sending the session to the watch…"
         recover()
     }
     private func fail(_ error: Error, operation: UUID) {
         guard self.operation == operation else { return }
         busy = false; task = nil
-        status = error is CancellationError ? "Autorización cancelada." : (error as? SignInError)?.message ?? "No se pudo autorizar. Vuelve a intentar."
+        status = error is CancellationError ? "Authorization canceled." : (error as? SignInError)?.message ?? "Couldn't authorize. Try again."
         if case .denied = error as? SignInError, let request {
             Task { [weak self] in _ = try? await self?.connectivity.send(.cancel(request)) }
             self.request = nil
@@ -92,7 +92,7 @@ final class PhoneConnectionSession: ObservableObject {
         task?.cancel(); task = nil
         busy = false
         do { try discard() } catch { status = SignInError.storage.message; return }
-        status = "Autorización cancelada."
+        status = "Authorization canceled."
         if let request { Task { [weak self] in _ = try? await self?.connectivity.send(.cancel(request)) } }
     }
     private func discard() throws {
@@ -106,7 +106,7 @@ final class PhoneConnectionSession: ObservableObject {
             do { try await Task.sleep(for: .seconds(max(0, request.expiresAt.timeIntervalSinceNow))) } catch { return }
             guard let self, self.request == request else { return }
             cancel()
-            status = "La autorización expiró. Inicia un nuevo intento."
+            status = "Authorization expired. Start a new attempt."
         }
     }
     private func receive(_ message: CompanionMessage) async -> CompanionMessage {
@@ -122,8 +122,8 @@ final class PhoneConnectionSession: ObservableObject {
             // Application context can be stale: query the Watch before presenting any browser.
             self.request = request
             if foreground { recover() }
-            else { status = "Solicitud recibida. Abre Watch Dot para autorizar." }
-            return .status("Abre Watch Dot en tu iPhone para autorizar.")
+            else { status = "Request received. Open Watch Dot to authorize." }
+            return .status("Open Watch Dot on your iPhone to authorize.")
         case .cancel(let request):
             if self.request == request { cancel() }
             return .idle
@@ -152,28 +152,28 @@ final class PhoneConnectionSession: ObservableObject {
                         if case .acknowledgement(let receipt) = reply, receipt == pending.receipt {
                             try complete()
                         } else if case .failure(let reason) = reply { status = reason }
-                        else { status = "Entrega pendiente. Abre Watch Dot en el reloj y reintenta." }
+                        else { status = "Handoff pending. Open Watch Dot on the watch and retry." }
                     case .failure(let reason): status = reason
                     default:
                         try discard()
-                        status = "El reloj canceló o reemplazó este intento. Inicia otro login."
+                        status = "The watch canceled or replaced this attempt. Start another sign-in."
                     }
                 } else if case .begin(let request) = response {
                     begin(request)
                 } else if case .acknowledgement = response {
                     authorized = true
-                    status = "El reloj tiene su sesión. Para cambiar de cuenta, cierra sesión en el Watch."
+                    status = "The watch already has its session. To switch accounts, sign out on the watch."
                 }
             } catch {
                 guard self.operation == operation else { return }
-                status = pending == nil ? "Abre Watch Dot en el reloj y toca Continuar con ChatGPT."
-                    : "Sesión pendiente de entrega. Abre Watch Dot en el reloj y reintenta."
+                status = pending == nil ? "Open Watch Dot on the watch and tap Continue with ChatGPT."
+                    : "Session waiting for handoff. Open Watch Dot on the watch and retry."
             }
         }
     }
     private func complete() throws {
         try discard()
         authorized = true
-        status = "Sesión guardada en el Apple Watch. El reloj renovará sus tokens por su cuenta."
+        status = "Session saved on Apple Watch. The watch will renew its tokens on its own."
     }
 }

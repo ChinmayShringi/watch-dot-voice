@@ -7,16 +7,16 @@ public enum ConnectionPhase: Equatable {
     case failed(String)
     public var title: String {
         switch self {
-        case .setupRequired: "Abre Watch Dot en tu iPhone"
-        case .signedOut: "Sin sesión"
-        case .connecting: "Conectando con el iPhone…"
-        case .awaitingConsent: "Autoriza en tu iPhone"
-        case .verifying: "Verificando cuenta…"
-        case .paused: "Autorización pausada"
-        case .signedIn: "Cuenta autorizada"
-        case .expired: "Sesión expirada"
-        case .cancelled: "Autorización cancelada"
-        case .failed: "No se pudo conectar"
+        case .setupRequired: "Open Watch Dot on your iPhone"
+        case .signedOut: "Signed out"
+        case .connecting: "Connecting to iPhone…"
+        case .awaitingConsent: "Authorize on your iPhone"
+        case .verifying: "Verifying account…"
+        case .paused: "Authorization paused"
+        case .signedIn: "Account authorized"
+        case .expired: "Session expired"
+        case .cancelled: "Authorization canceled"
+        case .failed: "Couldn't connect"
         }
     }
     public var isBusy: Bool { [.connecting, .awaitingConsent, .verifying].contains(self) }
@@ -47,10 +47,10 @@ public final class ConnectionSession: ObservableObject {
     public var chatBlockReason: String {
         if phase == .signedIn {
             switch dotProbeState {
-            case .checking: return "Conectando con Andy…"
+            case .checking: return "Connecting to your Dot…"
             case .failed(let reason): return reason
-            case .cancelled: return "Conexión con Andy cancelada. Puedes reintentar."
-            case .idle, .located: return "Falta verificar la sala de Andy."
+            case .cancelled: return "Connection to your Dot canceled. You can retry."
+            case .idle, .located: return "Your Dot's room isn't verified yet."
             }
         }
         if case .failed(let reason) = phase { return reason }
@@ -65,11 +65,11 @@ public final class ConnectionSession: ObservableObject {
     public var isConfigured: Bool { companion != nil }
     public var canResume: Bool { (record.phoneRequest?.expiresAt ?? .distantPast) > now() }
     public var actionTitle: String {
-        if !isConfigured && !canRenewSession { return "Abre Watch Dot en tu iPhone" }
-        if canResume { return "Reanudar autorización" }
-        if canRenewSession { return "Renovar sesión" }
-        if phase == .expired { return "Volver a autorizar" }
-        return "Continuar con ChatGPT"
+        if !isConfigured && !canRenewSession { return "Open Watch Dot on your iPhone" }
+        if canResume { return "Resume authorization" }
+        if canRenewSession { return "Renew session" }
+        if phase == .expired { return "Authorize again" }
+        return "Continue with ChatGPT"
     }
     private let companion: (any WatchSignInLink)?
     private var phoneValidationID: UUID?
@@ -115,7 +115,7 @@ public final class ConnectionSession: ObservableObject {
             record = loaded
             storageAvailable = true
             if let account = record.account {
-                accountLabel = account.email ?? "Cuenta de ChatGPT"
+                accountLabel = account.email ?? "ChatGPT account"
                 phase = account.expiresAt > now() ? .signedIn : .expired
             } else {
                 accountLabel = nil
@@ -223,7 +223,7 @@ public final class ConnectionSession: ObservableObject {
             switch message {
             case .prepare:
                 if record.account != nil, !canResume, canRenewSession, record.account!.expiresAt > now() {
-                    return .failure("El reloj ya tiene sesión. Cierra sesión en el Watch para cambiar de cuenta.")
+                    return .failure("The watch is already signed in. Sign out on the watch to switch accounts.")
                 }
                 return .begin(try preparePhoneAuthorization())
             case .query:
@@ -254,7 +254,7 @@ public final class ConnectionSession: ObservableObject {
                 record = updated
                 phoneValidationID = nil
                 resetDotProbe()
-                accountLabel = transfer.account.email ?? "Cuenta de ChatGPT"
+                accountLabel = transfer.account.email ?? "ChatGPT account"
                 phase = .signedIn
                 if isForeground { probeDotAccess() }
                 return .acknowledgement(transfer.receipt)
@@ -274,7 +274,7 @@ public final class ConnectionSession: ObservableObject {
 
     public func companionRequestFailed() {
         if record.phoneRequest != nil {
-            phase = .failed("Abre Watch Dot en tu iPhone y toca Continuar con ChatGPT.")
+            phase = .failed("Open Watch Dot on your iPhone and tap Continue with ChatGPT.")
         }
     }
 
@@ -310,7 +310,7 @@ public final class ConnectionSession: ObservableObject {
                 if case DotProbeError.schema = error, let diagnostic = self.probeDiagnostics.last {
                     self.dotProbeState = .failed(diagnostic.summary)
                 } else {
-                    self.dotProbeState = .failed((error as? DotProbeError)?.message ?? "Prueba interrumpida. Puedes repetirla.")
+                    self.dotProbeState = .failed((error as? DotProbeError)?.message ?? "Check interrupted. You can run it again.")
                 }
                 self.probeTask = nil
                 self.probeOperation = nil
@@ -456,7 +456,7 @@ public final class ConnectionSession: ObservableObject {
                 catch { throw SignInError.storage }
                 self.record = updated; self.unsavedRenewal = nil; self.storageAvailable = true
                 self.renewalRetryAfter = nil
-                self.accountLabel = renewed.email ?? "Cuenta de ChatGPT"
+                self.accountLabel = renewed.email ?? "ChatGPT account"
                 self.phase = .signedIn
                 return renewed
             } catch {

@@ -21,10 +21,10 @@ struct WatchDotApp: App {
         #if DEBUG && targetEnvironment(simulator)
         if previewChat {
             let messages = ProcessInfo.processInfo.arguments.contains("--preview-refresh-short")
-                ? [ChatMessage(role: .assistant, text: "Mensaje de prueba.")]
+                ? [ChatMessage(role: .assistant, text: "Test message.")]
                 : [
-                ChatMessage(role: .user, text: "Estoy probando el espacio del chat en el reloj."),
-                ChatMessage(role: .assistant, text: "Vista de demostración. Aquí se mostrarán los mensajes del chat.")
+                ChatMessage(role: .user, text: "I'm testing the chat layout on the watch."),
+                ChatMessage(role: .assistant, text: "Demo view. Chat messages will appear here.")
             ]
             try? store.save(ConversationSnapshot(version: 1, conversationID: UUID(), messages: messages,
                 pendingRequest: nil, hasAttemptedDelivery: false, deliveryState: .idle, draft: ""))
@@ -116,7 +116,7 @@ struct WatchDotApp: App {
 #if DEBUG && targetEnvironment(simulator)
 /// An offline fixture for exercising pull, release and loading without a real account.
 private actor RefreshPreviewTransport: ChatTransport {
-    let displayName = "Vista previa local"
+    let displayName = "Local preview"
     let isRealConnection = true
     let supportsHistorySync = true
     private var messages: [ChatMessage]
@@ -127,12 +127,12 @@ private actor RefreshPreviewTransport: ChatTransport {
     func recentMessages(limit: Int) async throws -> [RoomMessage] {
         reads += 1
         try await Task.sleep(for: .seconds(4))
-        messages.append(ChatMessage(role: .assistant, text: "Consulta local \(reads): mensajes actualizados."))
+        messages.append(ChatMessage(role: .assistant, text: "Local check \(reads): messages updated."))
         return messages.map { RoomMessage(remoteID: $0.id.uuidString, message: $0, requestID: nil, replyTo: nil) }
     }
 
     func send(_ request: TurnRequest, onAccepted: @escaping @Sendable () async -> Void) async throws -> ChatMessage {
-        throw ChatTransportError.rejected("Vista previa de sincronización: sin envíos.")
+        throw ChatTransportError.rejected("Sync preview: sending disabled.")
     }
 }
 #endif
@@ -155,9 +155,9 @@ private struct ChatRootView: View {
                                 Text(connection.chatBlockReason).font(.footnote)
                                 if connection.phase.isBusy || connection.dotProbeState == .checking {
                                     ProgressView()
-                                    Button("Ver conexión") { showConnection = true }
+                                    Button("View connection") { showConnection = true }
                                 } else {
-                                    Button(connection.phase == .signedIn ? "Conectar con Andy" : connection.actionTitle) {
+                                    Button(connection.phase == .signedIn ? "Connect to your Dot" : connection.actionTitle) {
                                         if connection.phase == .signedIn { connection.probeDotAccess() }
                                         else if connection.isConfigured {
                                             connection.connect()
@@ -174,7 +174,7 @@ private struct ChatRootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    ChatHeader(name: connection.directConversation?.transportName ?? "Andy",
+                    ChatHeader(name: connection.directConversation?.transportName ?? "Dot",
                                color: connectionColor, status: connection.phase.title) {
                         showConnection = true
                     }
@@ -221,7 +221,7 @@ private struct ChatHeader: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(name), detalles de conexión")
+        .accessibilityLabel("\(name), connection details")
         .accessibilityValue(status)
     }
 }
@@ -245,8 +245,8 @@ private struct ConversationView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             if session.messages.isEmpty {
                                 Text(session.isRealConnection
-                                     ? "Sala verificada. Envía un mensaje a Andy; la primera respuesta confirmará la conexión completa."
-                                     : "Demo local, sin conexión a Andy. Toca ⓘ para conectar.")
+                                     ? "Room verified. Send your Dot a message; the first reply confirms the full connection."
+                                     : "Local demo, not connected to your Dot. Tap ⓘ to connect.")
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
                             ForEach(session.messages) { message in
@@ -256,7 +256,7 @@ private struct ConversationView: View {
                             statusView
                             if let issue = session.storageIssue {
                                 Text(issue).font(.caption2).foregroundStyle(.red)
-                                Button("Volver a guardar", action: session.retrySaving).font(.caption2)
+                                Button("Save again", action: session.retrySaving).font(.caption2)
                             }
                             Color.clear.frame(height: 1).id("latest")
                                 .background(GeometryReader { geometry in
@@ -284,11 +284,11 @@ private struct ConversationView: View {
                             .frame(width: 28, height: 28)
                             .background(.black.opacity(0.9), in: Circle())
                             .allowsHitTesting(false)
-                            .accessibilityLabel(session.isSynchronizing ? "Consultando mensajes nuevos"
-                                : refreshGestureState.isArmed ? "Suelta para refrescar" : "Desliza hacia arriba para refrescar")
+                            .accessibilityLabel(session.isSynchronizing ? "Checking for new messages"
+                                : refreshGestureState.isArmed ? "Release to refresh" : "Swipe up to refresh")
                         }
                     }
-                    .accessibilityAction(named: Text("Sincronizar mensajes")) { session.refreshFromGesture() }
+                    .accessibilityAction(named: Text("Sync messages")) { session.refreshFromGesture() }
                     .onChange(of: session.deliveryState) { _, _ in
                         withAnimation { proxy.scrollTo("latest", anchor: .bottom) }
                     }
@@ -300,11 +300,11 @@ private struct ConversationView: View {
             }
 
             HStack(spacing: 6) {
-                TextField("Mensaje", text: $session.draft)
+                TextField("Message", text: $session.draft)
                     .font(.footnote)
                     .controlSize(.small)
                     .submitLabel(.done)
-                    .accessibilityLabel("Mensaje: dictado o teclado nativo")
+                    .accessibilityLabel("Message: dictation or native keyboard")
                     .disabled(!session.canEditDraft)
                 Button(action: send) {
                     Image(systemName: "arrow.up.circle.fill").font(.system(size: 26))
@@ -312,7 +312,7 @@ private struct ConversationView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !session.canSend)
-                .accessibilityLabel(session.isRealConnection ? "Enviar mensaje al Dot" : "Enviar mensaje de demostración")
+                .accessibilityLabel(session.isRealConnection ? "Send message to Dot" : "Send demo message")
             }
             .padding(.horizontal, 4)
             .padding(.bottom, 12)
@@ -330,7 +330,7 @@ private struct ConversationView: View {
     @ViewBuilder
     private var statusView: some View {
         if session.isSynchronizing {
-            Text("Sincronizando…").font(.caption2).foregroundStyle(.secondary)
+            Text("Syncing…").font(.caption2).foregroundStyle(.secondary)
         } else if let issue = session.synchronizationIssue {
             Text(issue).font(.caption2).foregroundStyle(.orange)
         }
@@ -339,23 +339,23 @@ private struct ConversationView: View {
             EmptyView()
         case .answered:
             if session.followUpUntil != nil {
-                Text("Refresca para ver mensajes desde otros clientes de tu Dot").font(.caption2).foregroundStyle(.secondary)
+                Text("Refresh to see messages from your Dot's other clients").font(.caption2).foregroundStyle(.secondary)
             }
         case .sending, .waiting:
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.mini)
                     Text(session.isRealConnection
-                         ? (session.deliveryState == .sending ? "Conectando con Andy…" : "Esperando a Andy…")
-                         : (session.deliveryState == .sending ? "Enviando demo…" : "Esperando demo…"))
+                         ? (session.deliveryState == .sending ? "Connecting to your Dot…" : "Waiting for your Dot…")
+                         : (session.deliveryState == .sending ? "Sending demo…" : "Waiting for demo…"))
                 }
             }
             .font(.caption2)
         case .waitingForConnection:
-            Text(session.isRealConnection ? "Sin conexión. El mensaje sigue pendiente." : "Sin conexión (simulada). El mensaje sigue pendiente.").font(.caption2)
+            Text(session.isRealConnection ? "Offline. The message is still pending." : "Offline (simulated). The message is still pending.").font(.caption2)
         case .cancelled:
             if session.showsCancellationNotice {
-                Text("Espera cancelada. No confirma una cancelación en el servicio.")
+                Text("Wait canceled. This doesn't confirm a cancellation on the service.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             recoveryActions
@@ -368,10 +368,10 @@ private struct ConversationView: View {
     private var recoveryActions: some View {
         VStack(alignment: .leading, spacing: 4) {
             if session.canRetry && !session.retryIsReadOnly {
-                Button("Reanudar mensaje", action: session.retry)
+                Button("Resume message", action: session.retry)
             }
             if session.canDiscard {
-                Button(session.isRealConnection ? "Descartar no enviado" : "Descartar demo", action: session.discardFailedTurn)
+                Button(session.isRealConnection ? "Discard unsent" : "Discard demo", action: session.discardFailedTurn)
             }
         }
         .font(.caption2)
@@ -494,46 +494,46 @@ private struct ConnectionView: View {
                     Text(reason).foregroundStyle(.orange)
                 }
                 if connection.phase == .awaitingConsent {
-                    Text("Abre Watch Dot en tu iPhone y completa la autorización en el navegador. La sesión llegará al reloj automáticamente.")
+                    Text("Open Watch Dot on your iPhone and finish authorizing in the browser. The session will reach the watch automatically.")
                 }
                 if connection.isRenewingSession {
-                    ProgressView("Renovando sesión…")
+                    ProgressView("Renewing session…")
                 } else if connection.phase.isBusy {
                     ProgressView()
-                    Button("Cancelar autorización", action: connection.cancel)
+                    Button("Cancel authorization", action: connection.cancel)
                 } else if connection.phase != .signedIn {
                     Button(connection.actionTitle, action: connection.connect)
                     if connection.canResume {
-                        Button("Cancelar autorización", action: connection.cancel)
+                        Button("Cancel authorization", action: connection.cancel)
                     }
                 }
                 Text(connection.phase == .signedIn
-                     ? "El punto verde indica cuenta autorizada. El chat directo sigue siendo experimental."
-                     : "Autoriza tu cuenta desde Watch Dot en tu iPhone. El chat con Andy se ejecuta en el reloj.")
+                     ? "A green dot means the account is authorized. Direct chat is still experimental."
+                     : "Authorize your account from Watch Dot on your iPhone. The chat with your Dot runs on the watch.")
                     .foregroundStyle(.secondary)
 
                 if connection.phase == .signedIn {
                     if connection.canRenewSession {
-                        Text("Renovación automática activada.").font(.caption2)
+                        Text("Automatic renewal on.").font(.caption2)
                     } else {
-                        Text("Autoriza una vez más para activar la renovación automática de esta sesión.")
+                        Text("Authorize once more to turn on automatic renewal for this session.")
                             .font(.caption2)
-                        Button("Activar renovación automática", action: connection.connect)
+                        Button("Turn on automatic renewal", action: connection.connect)
                     }
                     dotAccessProbe
                 }
 
                 if connection.accountLabel != nil {
-                    Button("Cerrar sesión local", action: connection.signOutLocally)
+                    Button("Sign out on this watch", action: connection.signOutLocally)
                 }
                 Divider()
-                Picker("Mensajes al sincronizar", selection: $historyLimit) {
+                Picker("Messages per sync", selection: $historyLimit) {
                     ForEach(ChatHistorySettings.limits, id: \.self) { Text("\($0)").tag($0) }
                 }
                 .onChange(of: historyLimit) { _, value in ChatHistorySettings.limit = value }
-                Text("Consulta mientras espera tu respuesta y una vez más al minuto. Al abrir solo muestra lo guardado. Al final del chat, desliza hacia arriba hasta que el icono cambie de color y suelta para sincronizar. watchOS puede aplazar la recepción.")
+                Text("Checks while waiting for your reply and once more after a minute. Opening the app only shows what's saved. At the end of the chat, swipe up until the icon changes color, then release to sync. watchOS may delay delivery.")
                     .font(.caption2).foregroundStyle(.secondary)
-                Button("Volver al chat") { dismiss() }
+                Button("Back to chat") { dismiss() }
             }
             .font(.footnote)
             .padding(.horizontal, 8)
@@ -543,26 +543,26 @@ private struct ConnectionView: View {
 
     private var dotAccessProbe: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Chat directo · experimental D4").font(.caption2).foregroundStyle(.secondary)
+            Text("Direct chat · experimental D4").font(.caption2).foregroundStyle(.secondary)
             if connection.dotProbeState == .checking {
-                ProgressView("Consultando OpenAI…")
-                Button("Cancelar prueba", action: connection.cancelDotProbe)
+                ProgressView("Checking OpenAI…")
+                Button("Cancel check", action: connection.cancelDotProbe)
             } else {
-                Button("Probar acceso a Andy", action: connection.probeDotAccess)
+                Button("Test access to your Dot", action: connection.probeDotAccess)
             }
             switch connection.dotProbeState {
             case .idle:
-                Text("Consulta tu Dot primario y su sala desde el reloj. Solo lectura, directamente desde el reloj.")
+                Text("Looks up your primary Dot and its room. Read-only, directly from the watch.")
             case .checking:
                 EmptyView()
             case .cancelled:
-                Text("Prueba cancelada. Puedes repetirla.")
+                Text("Check canceled. You can run it again.")
             case .located(let dot):
-                Text("Dot primario: \(dot.name ?? "sin nombre visible"). Sala y miembros verificados.")
+                Text("Primary Dot: \(dot.name ?? "no visible name"). Room and members verified.")
                 Text(session.isRealConnection
-                     ? (session.deliveryState == .answered ? "Envío y respuesta de Andy verificados."
-                        : "Chat directo habilitado. Vuelve al chat y envía un mensaje para verificar la respuesta de Andy.")
-                     : "Sala verificada. Preparando el chat directo…")
+                     ? (session.deliveryState == .answered ? "Send and reply with your Dot verified."
+                        : "Direct chat enabled. Go back to the chat and send a message to verify your Dot's reply.")
+                     : "Room verified. Preparing direct chat…")
                     .foregroundStyle(.orange)
             case .failed(let message):
                 Text(message).foregroundStyle(.orange)
@@ -582,10 +582,10 @@ private struct MessageBubble: View {
         HStack {
             if message.role == .user { Spacer(minLength: 14) }
             VStack(alignment: .leading, spacing: 3) {
-                Text(message.role == .user ? "Tú" : assistantName)
+                Text(message.role == .user ? "You" : assistantName)
                     .font(.caption2).foregroundStyle(.secondary)
                 Text(message.text).font(.footnote)
-                if pending { Text("Pendiente").font(.caption2).foregroundStyle(.orange) }
+                if pending { Text("Pending").font(.caption2).foregroundStyle(.orange) }
                 HStack(spacing: 4) {
                     Text(message.timestampLabel())
                         .monospacedDigit()
@@ -594,7 +594,7 @@ private struct MessageBubble: View {
                         Image(systemName: "checkmark")
                             .fontWeight(.semibold)
                             .foregroundStyle(Color(red: 0.20, green: 0.72, blue: 0.95))
-                            .accessibilityLabel("Mensaje recibido")
+                            .accessibilityLabel("Message received")
                     }
                 }
                 .font(.caption2)
