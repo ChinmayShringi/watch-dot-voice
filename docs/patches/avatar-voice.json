@@ -1,7 +1,7 @@
 {
   "upstream": "0ca53cc050017533e5ed8aef0436fc32e20f2ba1",
   "patch": "docs/patches/avatar-voice/avatar-voice.patch",
-  "patch_sha256": "4be7390324b36d3f0d7798fcbd280381d7e7710127f4fff809a5bfe2c5605daf",
+  "patch_sha256": "128625a95f46b52403a36ad87b10b46d77733a79f42a2bf9c7b94a140eb3e0a4",
   "project_base": "docs/patches/avatar-voice/base-project.pbxproj",
   "project_base_sha256": "1df5d47c0472949b6324e2941f4db5f6842d21ed2f27ad946a3e5ba5977b4ed1",
   "new_files": [

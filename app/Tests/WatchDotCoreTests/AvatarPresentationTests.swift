@@ -75,7 +75,52 @@ final class AvatarPresentationTests: XCTestCase {
         let second = reply("Second")
         let closed = AvatarPresentation().receiving([first], canPresent: true)
             .receiving([second], canPresent: false).dismissing()
-        XCTAssertEqual(closed.presentingPending(ifAllowed: true).visibleReplies, [second])
+        XCTAssertTrue(closed.presentingPending(ifAllowed: true).visibleReplies.isEmpty)
+        XCTAssertEqual(closed.dismissalCompleted(canPresent: true).visibleReplies, [second])
+    }
+
+    func testReplyDuringDismissalSurvivesRepeatedCloseAndPresentsOnceAfterCompletion() {
+        let first = reply("First")
+        let second = reply("Second")
+        let closing = AvatarPresentation().receiving([first], canPresent: true).dismissing()
+        let waiting = closing.receiving([first, second], canPresent: true)
+        XCTAssertTrue(waiting.isDismissing)
+        XCTAssertTrue(waiting.visibleReplies.isEmpty)
+        XCTAssertEqual(waiting.pendingReplies, [second])
+        XCTAssertEqual(waiting.dismissing(), waiting)
+        XCTAssertEqual(waiting.presentingPending(ifAllowed: true), waiting)
+
+        let shown = waiting.dismissing().dismissalCompleted(canPresent: true)
+        XCTAssertFalse(shown.isDismissing)
+        XCTAssertEqual(shown.visibleReplies, [second])
+        XCTAssertTrue(shown.pendingReplies.isEmpty)
+        XCTAssertEqual(shown.receiving([first, second], canPresent: true), shown)
+        XCTAssertEqual(shown.dismissalCompleted(canPresent: true), shown)
+    }
+
+    func testDismissalCompletionWhileBlockedPreservesUpdatedPendingReply() {
+        let first = reply("First")
+        let second = reply("Second")
+        let updated = reply("Expanded second", id: second.id)
+        let waiting = AvatarPresentation().receiving([first], canPresent: true).dismissing()
+            .receiving([second, updated], canPresent: true)
+            .dismissalCompleted(canPresent: false)
+        XCTAssertFalse(waiting.isDismissing)
+        XCTAssertTrue(waiting.visibleReplies.isEmpty)
+        XCTAssertEqual(waiting.pendingReplies, [updated])
+        XCTAssertEqual(waiting.presentingPending(ifAllowed: true).visibleReplies, [updated])
+    }
+
+    func testResetDuringDismissalClearsBoundaryAndPriorReplies() {
+        let prior = reply("Prior account")
+        let closing = AvatarPresentation().receiving([prior], canPresent: true).dismissing()
+        XCTAssertTrue(closing.isDismissing)
+        let reset = AvatarPresentation(baselineReplies: [prior])
+        XCTAssertFalse(reset.isDismissing)
+        XCTAssertTrue(reset.visibleReplies.isEmpty)
+        XCTAssertTrue(reset.pendingReplies.isEmpty)
+        XCTAssertEqual(reset.dismissalCompleted(canPresent: true), reset)
+        XCTAssertTrue(reset.receiving([prior], canPresent: true).visibleReplies.isEmpty)
     }
 
     func testResetClearsPriorConversationAndAcceptsNewEvents() {

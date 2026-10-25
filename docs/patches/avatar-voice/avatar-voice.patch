@@ -706,7 +706,7 @@
 +}
 --- /dev/null
 +++ b/Sources/WatchDotCore/AvatarPresentation.swift
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,66 @@
 +import Foundation
 +
 +/// Runtime presentation only. History hydration and dismissed replies never reopen the reader.
@@ -714,15 +714,19 @@
 +    public let visibleReplies: [ChatMessage]
 +    public let pendingReplies: [ChatMessage]
 +    public let seenIDs: Set<UUID>
++    public let isDismissing: Bool
 +
 +    public init(baselineReplies: [ChatMessage] = []) {
-+        self.init(visibleReplies: [], pendingReplies: [], seenIDs: Set(baselineReplies.map(\.id)))
++        self.init(visibleReplies: [], pendingReplies: [], seenIDs: Set(baselineReplies.map(\.id)),
++                  isDismissing: false)
 +    }
 +
-+    private init(visibleReplies: [ChatMessage], pendingReplies: [ChatMessage], seenIDs: Set<UUID>) {
++    private init(visibleReplies: [ChatMessage], pendingReplies: [ChatMessage], seenIDs: Set<UUID>,
++                 isDismissing: Bool) {
 +        self.visibleReplies = visibleReplies
 +        self.pendingReplies = pendingReplies
 +        self.seenIDs = seenIDs
++        self.isDismissing = isDismissing
 +    }
 +
 +    public func receiving(_ replies: [ChatMessage], canPresent: Bool) -> Self {
@@ -731,12 +735,22 @@
 +    }
 +
 +    public func presentingPending(ifAllowed allowed: Bool) -> Self {
-+        guard allowed, !pendingReplies.isEmpty else { return self }
-+        return Self(visibleReplies: visibleReplies + pendingReplies, pendingReplies: [], seenIDs: seenIDs)
++        guard allowed, !isDismissing, !pendingReplies.isEmpty else { return self }
++        return Self(visibleReplies: visibleReplies + pendingReplies, pendingReplies: [], seenIDs: seenIDs,
++                    isDismissing: isDismissing)
 +    }
 +
 +    public func dismissing() -> Self {
-+        Self(visibleReplies: [], pendingReplies: pendingReplies, seenIDs: seenIDs)
++        guard !isDismissing, !visibleReplies.isEmpty else { return self }
++        return Self(visibleReplies: [], pendingReplies: pendingReplies, seenIDs: seenIDs,
++                    isDismissing: true)
++    }
++
++    /// Promotion waits for the native cover's dismissal animation, not its binding change.
++    public func dismissalCompleted(canPresent: Bool) -> Self {
++        guard isDismissing else { return self }
++        return Self(visibleReplies: [], pendingReplies: pendingReplies, seenIDs: seenIDs,
++                    isDismissing: false).presentingPending(ifAllowed: canPresent)
 +    }
 +
 +    private func receiving(_ reply: ChatMessage) -> Self {
@@ -744,15 +758,15 @@
 +              !reply.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return self }
 +        if visibleReplies.contains(where: { $0.id == reply.id }) {
 +            return Self(visibleReplies: replacing(reply, in: visibleReplies),
-+                        pendingReplies: pendingReplies, seenIDs: seenIDs)
++                        pendingReplies: pendingReplies, seenIDs: seenIDs, isDismissing: isDismissing)
 +        }
 +        if pendingReplies.contains(where: { $0.id == reply.id }) {
 +            return Self(visibleReplies: visibleReplies, pendingReplies: replacing(reply, in: pendingReplies),
-+                        seenIDs: seenIDs)
++                        seenIDs: seenIDs, isDismissing: isDismissing)
 +        }
 +        guard !seenIDs.contains(reply.id) else { return self }
 +        return Self(visibleReplies: visibleReplies, pendingReplies: pendingReplies + [reply],
-+                    seenIDs: seenIDs.union([reply.id]))
++                    seenIDs: seenIDs.union([reply.id]), isDismissing: isDismissing)
 +    }
 +
 +    private func replacing(_ reply: ChatMessage, in replies: [ChatMessage]) -> [ChatMessage] {
@@ -1092,7 +1106,7 @@
 +}
 --- /dev/null
 +++ b/Tests/WatchDotCoreTests/AvatarPresentationTests.swift
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,144 @@
 +import XCTest
 +@testable import WatchDotCore
 +
@@ -1170,7 +1184,52 @@
 +        let second = reply("Second")
 +        let closed = AvatarPresentation().receiving([first], canPresent: true)
 +            .receiving([second], canPresent: false).dismissing()
-+        XCTAssertEqual(closed.presentingPending(ifAllowed: true).visibleReplies, [second])
++        XCTAssertTrue(closed.presentingPending(ifAllowed: true).visibleReplies.isEmpty)
++        XCTAssertEqual(closed.dismissalCompleted(canPresent: true).visibleReplies, [second])
++    }
++
++    func testReplyDuringDismissalSurvivesRepeatedCloseAndPresentsOnceAfterCompletion() {
++        let first = reply("First")
++        let second = reply("Second")
++        let closing = AvatarPresentation().receiving([first], canPresent: true).dismissing()
++        let waiting = closing.receiving([first, second], canPresent: true)
++        XCTAssertTrue(waiting.isDismissing)
++        XCTAssertTrue(waiting.visibleReplies.isEmpty)
++        XCTAssertEqual(waiting.pendingReplies, [second])
++        XCTAssertEqual(waiting.dismissing(), waiting)
++        XCTAssertEqual(waiting.presentingPending(ifAllowed: true), waiting)
++
++        let shown = waiting.dismissing().dismissalCompleted(canPresent: true)
++        XCTAssertFalse(shown.isDismissing)
++        XCTAssertEqual(shown.visibleReplies, [second])
++        XCTAssertTrue(shown.pendingReplies.isEmpty)
++        XCTAssertEqual(shown.receiving([first, second], canPresent: true), shown)
++        XCTAssertEqual(shown.dismissalCompleted(canPresent: true), shown)
++    }
++
++    func testDismissalCompletionWhileBlockedPreservesUpdatedPendingReply() {
++        let first = reply("First")
++        let second = reply("Second")
++        let updated = reply("Expanded second", id: second.id)
++        let waiting = AvatarPresentation().receiving([first], canPresent: true).dismissing()
++            .receiving([second, updated], canPresent: true)
++            .dismissalCompleted(canPresent: false)
++        XCTAssertFalse(waiting.isDismissing)
++        XCTAssertTrue(waiting.visibleReplies.isEmpty)
++        XCTAssertEqual(waiting.pendingReplies, [updated])
++        XCTAssertEqual(waiting.presentingPending(ifAllowed: true).visibleReplies, [updated])
++    }
++
++    func testResetDuringDismissalClearsBoundaryAndPriorReplies() {
++        let prior = reply("Prior account")
++        let closing = AvatarPresentation().receiving([prior], canPresent: true).dismissing()
++        XCTAssertTrue(closing.isDismissing)
++        let reset = AvatarPresentation(baselineReplies: [prior])
++        XCTAssertFalse(reset.isDismissing)
++        XCTAssertTrue(reset.visibleReplies.isEmpty)
++        XCTAssertTrue(reset.pendingReplies.isEmpty)
++        XCTAssertEqual(reset.dismissalCompleted(canPresent: true), reset)
++        XCTAssertTrue(reset.receiving([prior], canPresent: true).visibleReplies.isEmpty)
 +    }
 +
 +    func testResetClearsPriorConversationAndAcceptsNewEvents() {
@@ -1898,7 +1957,7 @@
 +}
 --- /dev/null
 +++ b/WatchDotApp/AvatarConversationView.swift
-@@ -0,0 +1,316 @@
+@@ -0,0 +1,320 @@
 +import SwiftUI
 +import WatchKit
 +
@@ -1989,7 +2048,7 @@
 +                }
 +            }
 +        }
-+        .fullScreenCover(isPresented: replyPresented, onDismiss: presentPendingReply) {
++        .fullScreenCover(isPresented: replyPresented, onDismiss: replyDismissed) {
 +            ReplyReaderView(replies: presentation.visibleReplies, name: session.transportName,
 +                            close: closeReply)
 +        }
@@ -2198,6 +2257,10 @@
 +
 +    private func presentPendingReply() {
 +        presentation = presentation.presentingPending(ifAllowed: canPresentReply)
++    }
++
++    private func replyDismissed() {
++        presentation = presentation.dismissalCompleted(canPresent: canPresentReply)
 +    }
 +
 +    private func closeReply() {

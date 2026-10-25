@@ -88,7 +88,7 @@ struct AvatarConversationView: View {
                 }
             }
         }
-        .fullScreenCover(isPresented: replyPresented, onDismiss: presentPendingReply) {
+        .fullScreenCover(isPresented: replyPresented, onDismiss: replyDismissed) {
             ReplyReaderView(replies: presentation.visibleReplies, name: session.transportName,
                             close: closeReply)
         }
@@ -297,6 +297,10 @@ struct AvatarConversationView: View {
 
     private func presentPendingReply() {
         presentation = presentation.presentingPending(ifAllowed: canPresentReply)
+    }
+
+    private func replyDismissed() {
+        presentation = presentation.dismissalCompleted(canPresent: canPresentReply)
     }
 
     private func closeReply() {
