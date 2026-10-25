@@ -152,4 +152,135 @@ import XCTest
         XCTAssertEqual(session.phase, .failed)
         XCTAssertEqual(recorder.starts, 0)
     }
+
+    func testInactiveCaptureStopsWithRetainedFeedbackAndNoUpload() async throws {
+        let recorder = VoiceRecorderStub()
+        var uploads = 0
+        let session = VoiceInputSession(recorder: recorder, prepare: {
+            VoiceTurn(transcribe: { _ in uploads += 1; return "text" }, send: { _ in true })
+        })
+        session.tap(); try await settle { session.phase == .listening }
+        session.sceneChanged(to: .inactive)
+        XCTAssertEqual(session.phase, .failed)
+        XCTAssertEqual(session.errorMessage, VoiceInputIssue.interrupted.message)
+        session.sceneChanged(to: .background)
+        session.sceneChanged(to: .active)
+        XCTAssertEqual(session.errorMessage, VoiceInputIssue.interrupted.message)
+        XCTAssertEqual(uploads, 0)
+        XCTAssertEqual(recorder.stops, 0)
+    }
+
+    func testInactivePermissionCompletionCannotStartStaleCapture() async throws {
+        let recorder = VoiceRecorderStub(); recorder.holdPermission = true
+        let session = VoiceInputSession(recorder: recorder, prepare: {
+            VoiceTurn(transcribe: { _ in "text" }, send: { _ in XCTFail("Unexpected send"); return false })
+        })
+        session.tap(); try await settle { recorder.permission != nil }
+        session.sceneChanged(to: .inactive)
+        recorder.release()
+        try await Task.sleep(for: .milliseconds(10))
+        XCTAssertEqual(session.phase, .failed)
+        XCTAssertEqual(session.errorMessage, VoiceInputIssue.interrupted.message)
+        XCTAssertEqual(recorder.stops, 0)
+    }
+
+    func testInactiveTranscriptionFinishesAndSendsExactlyOnce() async throws {
+        let recorder = VoiceRecorderStub()
+        var continuation: CheckedContinuation<String, Never>?
+        var sends: [String] = []
+        let session = VoiceInputSession(recorder: recorder, prepare: {
+            VoiceTurn(transcribe: { _ in await withCheckedContinuation { continuation = $0 } },
+                send: { sends = sends + [$0]; return true })
+        })
+        session.tap(); try await settle { session.phase == .listening }; session.tap()
+        try await settle { continuation != nil }
+        session.sceneChanged(to: .inactive)
+        XCTAssertEqual(session.phase, .transcribing)
+        continuation?.resume(returning: "Send after wrist lowers")
+        try await settle { session.phase == .idle }
+        XCTAssertEqual(sends, ["Send after wrist lowers"])
+        session.sceneChanged(to: .active)
+        XCTAssertEqual(sends.count, 1)
+    }
+
+    func testBackgroundCancelsNonCooperativeTranscriptionWithFeedback() async throws {
+        let recorder = VoiceRecorderStub()
+        var continuation: CheckedContinuation<String, Never>?
+        var sends = 0
+        let session = VoiceInputSession(recorder: recorder, prepare: {
+            VoiceTurn(transcribe: { _ in await withCheckedContinuation { continuation = $0 } },
+                send: { _ in sends += 1; return true })
+        })
+        session.tap(); try await settle { session.phase == .listening }; session.tap()
+        try await settle { continuation != nil }
+        session.sceneChanged(to: .background)
+        XCTAssertEqual(session.phase, .failed)
+        XCTAssertEqual(session.errorMessage, VoiceInputIssue.transcriptionInterrupted.message)
+        continuation?.resume(returning: "Must never send")
+        try await Task.sleep(for: .milliseconds(10))
+        XCTAssertEqual(sends, 0)
+        XCTAssertEqual(session.errorMessage, VoiceInputIssue.transcriptionInterrupted.message)
+    }
+
+    func testBackgroundPreservesCompletedTranscriptUntilExplicitIdentityCancellation() async throws {
+        let recorder = VoiceRecorderStub()
+        let session = VoiceInputSession(recorder: recorder, prepare: {
+            VoiceTurn(transcribe: { _ in "private transcript" }, send: { _ in false })
+        })
+        session.tap(); try await settle { session.phase == .listening }; session.tap()
+        try await settle { session.phase == .failed }
+        XCTAssertNotNil(session.retainedTranscript)
+        session.sceneChanged(to: .background)
+        session.sceneChanged(to: .active)
+        XCTAssertEqual(session.retainedTranscript, "private transcript")
+        XCTAssertEqual(session.errorMessage, VoiceInputIssue.sendRejected.message)
+        session.cancel()
+        XCTAssertNil(session.retainedTranscript)
+        XCTAssertNil(session.errorMessage)
+        XCTAssertEqual(session.phase, .idle)
+    }
+
+    func testDismissFailureDoesNotRecordOrSendAndUnblocksQueuedReplyAfterSheetDismissal() async throws {
+        let recorder = VoiceRecorderStub()
+        var sends = 0
+        let session = VoiceInputSession(recorder: recorder, prepare: {
+            VoiceTurn(transcribe: { _ in "text" }, send: { _ in sends += 1; return true })
+        })
+        session.tap(); try await settle { session.phase == .listening }
+        session.sceneChanged(to: .inactive)
+        let reply = ChatMessage(role: .assistant, text: "An earlier turn completed.")
+        let deferred = AvatarPresentation().receiving([reply], canPresent: session.phase != .failed)
+        XCTAssertEqual(deferred.pendingReplies, [reply])
+        XCTAssertTrue(session.dismissFailure())
+        XCTAssertNil(session.errorMessage)
+        XCTAssertEqual(session.phase, .idle)
+        let whileSheetDismisses = deferred.presentingPending(ifAllowed: false)
+        XCTAssertTrue(whileSheetDismisses.visibleReplies.isEmpty)
+        let afterSheetDismisses = whileSheetDismisses.presentingPending(ifAllowed: session.phase != .failed)
+        XCTAssertEqual(afterSheetDismisses.visibleReplies, [reply])
+        XCTAssertEqual(recorder.starts, 1)
+        XCTAssertEqual(recorder.stops, 0)
+        XCTAssertEqual(sends, 0)
+    }
+
+    func testDismissRequiresExplicitTranscriptDiscardAndNeverRestartsInput() async throws {
+        let recorder = VoiceRecorderStub()
+        var sends = 0
+        let session = VoiceInputSession(recorder: recorder, prepare: {
+            VoiceTurn(transcribe: { _ in "review this first" }, send: { _ in sends += 1; return false })
+        })
+        XCTAssertFalse(session.dismissFailure())
+        session.tap(); try await settle { session.phase == .listening }
+        XCTAssertFalse(session.dismissFailure(discardTranscript: true))
+        XCTAssertEqual(session.phase, .listening)
+        session.tap(); try await settle { session.phase == .failed }
+        XCTAssertFalse(session.dismissFailure())
+        XCTAssertEqual(session.retainedTranscript, "review this first")
+        XCTAssertTrue(session.dismissFailure(discardTranscript: true))
+        XCTAssertNil(session.retainedTranscript)
+        XCTAssertNil(session.errorMessage)
+        XCTAssertEqual(session.phase, .idle)
+        XCTAssertEqual(recorder.starts, 1)
+        XCTAssertEqual(sends, 1)
+    }
 }

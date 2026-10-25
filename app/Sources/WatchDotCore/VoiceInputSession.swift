@@ -3,7 +3,7 @@ import Combine
 
 public enum VoiceInputIssue: Error, Equatable, LocalizedError {
     case permissionDenied, microphoneUnavailable, interrupted, noSpeech, invalidAudio
-    case unavailable, sessionChanged, malformedResponse, transcriptTooLong, sendRejected
+    case unavailable, sessionChanged, malformedResponse, transcriptTooLong, sendRejected, transcriptionInterrupted
     case transcriptionHTTP(Int), challenge
 
     public var message: String {
@@ -11,6 +11,7 @@ public enum VoiceInputIssue: Error, Equatable, LocalizedError {
         case .permissionDenied: "Allow microphone access in Settings, or use text input."
         case .microphoneUnavailable: "The microphone is unavailable. Try again or use text input."
         case .interrupted: "Recording was interrupted. Try again."
+        case .transcriptionInterrupted: "Voice input stopped before your message was sent. Try again."
         case .noSpeech: "No speech was detected. Try again."
         case .invalidAudio: "The recording could not be used. Try again."
         case .unavailable: "Voice transcription is unavailable. Try again or use text input."
@@ -66,6 +67,7 @@ extension VoiceRecording {
 }
 
 public enum VoiceInputPhase: Equatable { case idle, requesting, listening, transcribing, failed }
+public enum VoiceSceneState { case active, inactive, background }
 
 @MainActor public final class VoiceInputSession: ObservableObject {
     @Published public private(set) var phase: VoiceInputPhase = .idle
@@ -103,6 +105,40 @@ public enum VoiceInputPhase: Equatable { case idle, requesting, listening, trans
         turn = nil; startedAt = nil
         level = 0; elapsed = 0; errorMessage = nil; retainedTranscript = nil
         phase = .idle
+    }
+
+    @discardableResult
+    public func dismissFailure(discardTranscript: Bool = false) -> Bool {
+        guard phase == .failed, retainedTranscript == nil || discardTranscript else { return false }
+        cancel()
+        return true
+    }
+
+    public func sceneChanged(to state: VoiceSceneState) {
+        switch state {
+        case .active: break
+        case .inactive:
+            if phase == .requesting || phase == .listening {
+                interrupt(with: VoiceInputIssue.interrupted.message)
+            }
+        case .background:
+            let message: String?
+            switch phase {
+            case .requesting, .listening: message = VoiceInputIssue.interrupted.message
+            case .transcribing: message = VoiceInputIssue.transcriptionInterrupted.message
+            case .failed: return
+            case .idle: message = nil
+            }
+            interrupt(with: message)
+        }
+    }
+
+    private func interrupt(with message: String?) {
+        cancel()
+        if let message {
+            errorMessage = message
+            phase = .failed
+        }
     }
 
     private func begin() {

@@ -257,10 +257,81 @@ final class ConversationSessionTests: XCTestCase {
         try corrupt.write(to: url)
         let session = ConversationSession(transport: RecordingTransport(), store: FileConversationStore(url: url))
         XCTAssertNotNil(session.storageIssue)
+        XCTAssertFalse(session.canRetrySaving)
         XCTAssertFalse(session.send("no enviar"))
         session.draft = "no sobrescribir"
         session.retrySaving()
         XCTAssertEqual(try Data(contentsOf: url), corrupt)
+    }
+
+    func testBackgroundLoadFailurePreservesUnreadableHistoryAndDisablesSaveRetry() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let session = ConversationSession(transport: RecordingTransport(), store: FileConversationStore(url: url))
+        session.draft = "Saved draft"
+        let saved = try Data(contentsOf: url)
+        let corrupt = Data("unreadable background history".utf8)
+        try corrupt.write(to: url)
+
+        session.reloadAfterBackground()
+
+        XCTAssertNotNil(session.storageIssue)
+        XCTAssertFalse(session.canRetrySaving)
+        XCTAssertFalse(session.canEditDraft)
+        XCTAssertFalse(session.send("Do not send"))
+        session.retrySaving()
+        session.draft = "Do not overwrite retained history"
+        XCTAssertEqual(try Data(contentsOf: url), corrupt)
+
+        try saved.write(to: url)
+        session.reloadAfterBackground()
+        session.retrySaving()
+        XCTAssertNotNil(session.storageIssue)
+        XCTAssertFalse(session.canRetrySaving)
+        XCTAssertEqual(try Data(contentsOf: url), saved)
+
+        let reopened = ConversationSession(transport: RecordingTransport(), store: FileConversationStore(url: url))
+        XCTAssertNil(reopened.storageIssue)
+        XCTAssertTrue(reopened.canSend)
+        XCTAssertEqual(reopened.draft, "Saved draft")
+    }
+
+    func testBackgroundLoadRejectsAnotherConversationWithoutOverwritingIt() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = FileConversationStore(url: url)
+        let session = ConversationSession(transport: RecordingTransport(), store: store)
+        let other = ConversationSnapshot(version: 1, conversationID: UUID(), messages: [],
+            pendingRequest: nil, hasAttemptedDelivery: false, deliveryState: .idle, draft: "Other chat")
+        try store.save(other)
+
+        session.reloadAfterBackground()
+        session.retrySaving()
+
+        XCTAssertFalse(session.canRetrySaving)
+        XCTAssertFalse(session.canSend)
+        XCTAssertEqual(try store.load(), other)
+    }
+
+    func testDraftSaveFailureCanBeRetriedWithoutCreatingATurn() async {
+        let store = MemoryStore()
+        let transport = RecordingTransport()
+        let session = ConversationSession(transport: transport, store: store)
+        XCTAssertFalse(session.canRetrySaving)
+        store.failSave = true
+        session.draft = "Keep this draft"
+        XCTAssertTrue(session.canRetrySaving)
+
+        store.failSave = false
+        session.retrySaving()
+
+        XCTAssertNil(session.storageIssue)
+        XCTAssertFalse(session.canRetrySaving)
+        XCTAssertTrue(session.canSend)
+        XCTAssertEqual(store.snapshot?.draft, "Keep this draft")
+        XCTAssertTrue(session.messages.isEmpty)
+        let requests = await transport.recordedRequests()
+        XCTAssertTrue(requests.isEmpty)
     }
 
     func testSaveFailureBlocksTransmissionUntilPersistenceWorks() async {
@@ -270,10 +341,12 @@ final class ConversationSessionTests: XCTestCase {
         let session = ConversationSession(transport: transport, store: store)
         session.send("guardar antes de enviar")
         XCTAssertNotNil(session.storageIssue)
+        XCTAssertTrue(session.canRetrySaving)
         let requests = await transport.recordedRequests()
         XCTAssertTrue(requests.isEmpty)
         store.failSave = false
         session.retrySaving()
+        XCTAssertFalse(session.canRetrySaving)
         session.retry()
         await waitUntil { session.deliveryState == .answered }
     }
@@ -332,9 +405,11 @@ final class ConversationSessionTests: XCTestCase {
         store.failSave = true
         await waitUntil { session.deliveryState == .answered }
         XCTAssertNotNil(session.storageIssue)
+        XCTAssertTrue(session.canRetrySaving)
         XCTAssertFalse(session.canSend)
         store.failSave = false
         session.retrySaving()
+        XCTAssertFalse(session.canRetrySaving)
         XCTAssertTrue(session.canSend)
         XCTAssertEqual(store.snapshot?.messages.count, 2)
         let requests = await transport.recordedRequests()

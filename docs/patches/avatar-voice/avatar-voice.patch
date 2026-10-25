@@ -159,7 +159,15 @@
      @Published public private(set) var deliveryState: DeliveryState = .idle
      @Published public private(set) var showsCancellationNotice = false
      @Published public private(set) var storageIssue: String?
-@@ -241,6 +243,7 @@
+@@ -206,6 +208,7 @@
+     }
+     public var canEditDraft: Bool { storageIssue == nil }
+     public var canSend: Bool { pendingRequest == nil && storageIssue == nil }
++    public var canRetrySaving: Bool { storageIssue != nil && !loadFailed }
+     public var canRetry: Bool {
+         storageIssue == nil && !deliveryState.isActive &&
+         ((!awaitingReplies.isEmpty && transport.supportsReadOnlyResume) ||
+@@ -241,6 +244,7 @@
      private var outgoingMessageIDs: [UUID: UUID] = [:]
      private var syncTask: Task<Void, Never>?
      private var followUpTask: Task<Void, Never>?
@@ -167,7 +175,7 @@
      private let now: () -> Date
      private let followUpDelay: TimeInterval
  
-@@ -283,7 +286,7 @@
+@@ -283,7 +287,7 @@
      }
  
      @discardableResult
@@ -176,7 +184,7 @@
          let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
          guard !trimmed.isEmpty, canSend else { return false }
          readsPaused = false
-@@ -291,7 +294,7 @@
+@@ -291,7 +295,7 @@
          pendingRequest = TurnRequest(conversationID: conversationID, clientTurnID: UUID(), messages: messages)
          outgoingMessageIDs[pendingRequest!.clientTurnID] = messages.last!.id
          hasAttemptedDelivery = false
@@ -185,7 +193,19 @@
          beginSend()
          return true
      }
-@@ -487,8 +490,9 @@
+@@ -417,7 +421,10 @@
+         }
+     }
+ 
+-    public func retrySaving() { _ = persist() }
++    public func retrySaving() {
++        guard canRetrySaving else { return }
++        _ = persist()
++    }
+ 
+     private func beginSend() {
+         guard let request = pendingRequest else { return }
+@@ -487,8 +494,9 @@
              replyOperations[generation] = nil
              awaitingReplies.removeAll { $0.clientTurnID == operation.request.clientTurnID }
              // Multiple accepted inputs can observe the same later room message. Show it once.
@@ -197,7 +217,7 @@
              if pendingRequest == nil { deliveryState = awaitingReplies.isEmpty ? .answered : .waiting }
              _ = persist()
              return
-@@ -500,11 +504,12 @@
+@@ -500,11 +508,12 @@
              return
          }
          invalidateAttempt()
@@ -212,7 +232,7 @@
          _ = persist()
      }
  
-@@ -617,17 +622,32 @@
+@@ -617,17 +626,32 @@
              followUpUntil: followUpUntil, outgoingMessageIDs: outgoingMessageIDs)
      }
  
@@ -247,7 +267,7 @@
          followUpTask = Task { [weak self, transport] in
              guard let delay = self.map({ max(0, due.timeIntervalSince($0.now())) }) else { return }
              do { try await Task.sleep(for: .seconds(delay)) } catch { return }
-@@ -635,8 +655,23 @@
+@@ -635,8 +659,23 @@
              do {
                  let page = try await transport.additionalMessages()
                  guard !Task.isCancelled, self.followUpUntil == due else { return }
@@ -314,6 +334,115 @@
  }
  
  struct RoomPage: Sendable {
+--- a/Tests/WatchDotCoreTests/ConversationSessionTests.swift
++++ b/Tests/WatchDotCoreTests/ConversationSessionTests.swift
+@@ -257,10 +257,81 @@
+         try corrupt.write(to: url)
+         let session = ConversationSession(transport: RecordingTransport(), store: FileConversationStore(url: url))
+         XCTAssertNotNil(session.storageIssue)
++        XCTAssertFalse(session.canRetrySaving)
+         XCTAssertFalse(session.send("no enviar"))
+         session.draft = "no sobrescribir"
+         session.retrySaving()
+         XCTAssertEqual(try Data(contentsOf: url), corrupt)
++    }
++
++    func testBackgroundLoadFailurePreservesUnreadableHistoryAndDisablesSaveRetry() throws {
++        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
++        defer { try? FileManager.default.removeItem(at: url) }
++        let session = ConversationSession(transport: RecordingTransport(), store: FileConversationStore(url: url))
++        session.draft = "Saved draft"
++        let saved = try Data(contentsOf: url)
++        let corrupt = Data("unreadable background history".utf8)
++        try corrupt.write(to: url)
++
++        session.reloadAfterBackground()
++
++        XCTAssertNotNil(session.storageIssue)
++        XCTAssertFalse(session.canRetrySaving)
++        XCTAssertFalse(session.canEditDraft)
++        XCTAssertFalse(session.send("Do not send"))
++        session.retrySaving()
++        session.draft = "Do not overwrite retained history"
++        XCTAssertEqual(try Data(contentsOf: url), corrupt)
++
++        try saved.write(to: url)
++        session.reloadAfterBackground()
++        session.retrySaving()
++        XCTAssertNotNil(session.storageIssue)
++        XCTAssertFalse(session.canRetrySaving)
++        XCTAssertEqual(try Data(contentsOf: url), saved)
++
++        let reopened = ConversationSession(transport: RecordingTransport(), store: FileConversationStore(url: url))
++        XCTAssertNil(reopened.storageIssue)
++        XCTAssertTrue(reopened.canSend)
++        XCTAssertEqual(reopened.draft, "Saved draft")
++    }
++
++    func testBackgroundLoadRejectsAnotherConversationWithoutOverwritingIt() throws {
++        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
++        defer { try? FileManager.default.removeItem(at: url) }
++        let store = FileConversationStore(url: url)
++        let session = ConversationSession(transport: RecordingTransport(), store: store)
++        let other = ConversationSnapshot(version: 1, conversationID: UUID(), messages: [],
++            pendingRequest: nil, hasAttemptedDelivery: false, deliveryState: .idle, draft: "Other chat")
++        try store.save(other)
++
++        session.reloadAfterBackground()
++        session.retrySaving()
++
++        XCTAssertFalse(session.canRetrySaving)
++        XCTAssertFalse(session.canSend)
++        XCTAssertEqual(try store.load(), other)
++    }
++
++    func testDraftSaveFailureCanBeRetriedWithoutCreatingATurn() async {
++        let store = MemoryStore()
++        let transport = RecordingTransport()
++        let session = ConversationSession(transport: transport, store: store)
++        XCTAssertFalse(session.canRetrySaving)
++        store.failSave = true
++        session.draft = "Keep this draft"
++        XCTAssertTrue(session.canRetrySaving)
++
++        store.failSave = false
++        session.retrySaving()
++
++        XCTAssertNil(session.storageIssue)
++        XCTAssertFalse(session.canRetrySaving)
++        XCTAssertTrue(session.canSend)
++        XCTAssertEqual(store.snapshot?.draft, "Keep this draft")
++        XCTAssertTrue(session.messages.isEmpty)
++        let requests = await transport.recordedRequests()
++        XCTAssertTrue(requests.isEmpty)
+     }
+ 
+     func testSaveFailureBlocksTransmissionUntilPersistenceWorks() async {
+@@ -270,10 +341,12 @@
+         let session = ConversationSession(transport: transport, store: store)
+         session.send("guardar antes de enviar")
+         XCTAssertNotNil(session.storageIssue)
++        XCTAssertTrue(session.canRetrySaving)
+         let requests = await transport.recordedRequests()
+         XCTAssertTrue(requests.isEmpty)
+         store.failSave = false
+         session.retrySaving()
++        XCTAssertFalse(session.canRetrySaving)
+         session.retry()
+         await waitUntil { session.deliveryState == .answered }
+     }
+@@ -332,9 +405,11 @@
+         store.failSave = true
+         await waitUntil { session.deliveryState == .answered }
+         XCTAssertNotNil(session.storageIssue)
++        XCTAssertTrue(session.canRetrySaving)
+         XCTAssertFalse(session.canSend)
+         store.failSave = false
+         session.retrySaving()
++        XCTAssertFalse(session.canRetrySaving)
+         XCTAssertTrue(session.canSend)
+         XCTAssertEqual(store.snapshot?.messages.count, 2)
+         let requests = await transport.recordedRequests()
 --- a/Tests/WatchDotCoreTests/RoomReceptionTests.swift
 +++ b/Tests/WatchDotCoreTests/RoomReceptionTests.swift
 @@ -173,6 +173,12 @@
@@ -331,7 +460,7 @@
          XCTAssertTrue(calls.allSatisfy { $0.httpMethod == "GET" })
 --- a/WatchDot.xcodeproj/project.pbxproj
 +++ b/WatchDot.xcodeproj/project.pbxproj
-@@ -33,6 +33,17 @@
+@@ -33,6 +33,21 @@
  		D0000000000000000000006F = {isa = PBXBuildFile; fileRef = B00000000000000000000003; };
  		D00000000000000000000070 = {isa = PBXBuildFile; fileRef = A0000000000000000000000A; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
  		D00000000000000000000071 = {isa = PBXBuildFile; fileRef = D0000000000000000000000A; };
@@ -346,10 +475,14 @@
 +		F2000000000000000000000A /* CompanionAvatar.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000A /* CompanionAvatar.swift */; };
 +		F2000000000000000000000B /* AvatarPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000B /* AvatarPickerView.swift */; };
 +		F2000000000000000000000C /* ReplyReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000C /* ReplyReaderView.swift */; };
++		F2000000000000000000000D /* SensitiveContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000D /* SensitiveContent.swift */; };
++		F2000000000000000000000E /* SensitiveContentPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000E /* SensitiveContentPolicy.swift */; };
++		F2000000000000000000000F /* HistoryScrollPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000F /* HistoryScrollPolicy.swift */; };
++		F20000000000000000000010 /* HomeInteraction.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000010 /* HomeInteraction.swift */; };
  /* End PBXBuildFile section */
  
  /* Begin PBXFileReference section */
-@@ -60,6 +71,17 @@
+@@ -60,6 +75,21 @@
  		D00000000000000000000009 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WatchDotPhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
  		D0000000000000000000000A = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
  		E00000000000000000000001 /* WatchDot.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = WatchDot.xcconfig; path = ../docs/config/WatchDot.xcconfig; sourceTree = SOURCE_ROOT; };
@@ -364,35 +497,43 @@
 +		F1000000000000000000000A /* CompanionAvatar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionAvatar.swift; sourceTree = "<group>"; };
 +		F1000000000000000000000B /* AvatarPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarPickerView.swift; sourceTree = "<group>"; };
 +		F1000000000000000000000C /* ReplyReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplyReaderView.swift; sourceTree = "<group>"; };
++		F1000000000000000000000D /* SensitiveContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensitiveContent.swift; sourceTree = "<group>"; };
++		F1000000000000000000000E /* SensitiveContentPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensitiveContentPolicy.swift; sourceTree = "<group>"; };
++		F1000000000000000000000F /* HistoryScrollPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryScrollPolicy.swift; sourceTree = "<group>"; };
++		F10000000000000000000010 /* HomeInteraction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeInteraction.swift; sourceTree = "<group>"; };
  /* End PBXFileReference section */
  
  /* Begin PBXFrameworksBuildPhase section */
-@@ -100,6 +122,12 @@
+@@ -100,6 +130,13 @@
  		A0000000000000000000000E /* WatchDotApp */ = {
  			isa = PBXGroup;
  			children = (
 +				F1000000000000000000000A /* CompanionAvatar.swift */,
 +				F1000000000000000000000B /* AvatarPickerView.swift */,
 +				F1000000000000000000000C /* ReplyReaderView.swift */,
++				F1000000000000000000000D /* SensitiveContent.swift */,
 +				F10000000000000000000006 /* AvatarConversationView.swift */,
 +				F10000000000000000000005 /* SpriteAvatar.swift */,
 +				F10000000000000000000004 /* WatchVoiceRecorder.swift */,
  				A0000000000000000000000B /* WatchDotApp.swift */,
  				B00000000000000000000007 /* WatchBackgroundReceiver.swift */,
  				A0000000000000000000001A /* Assets.xcassets */,
-@@ -110,6 +138,11 @@
+@@ -110,6 +147,14 @@
  		A0000000000000000000000F /* Sources/WatchDotCore */ = {
  			isa = PBXGroup;
  			children = (
 +				F10000000000000000000008 /* AvatarPresentation.swift */,
 +				F10000000000000000000009 /* CompanionAppearance.swift */,
++				F10000000000000000000010 /* HomeInteraction.swift */,
++				F1000000000000000000000F /* HistoryScrollPolicy.swift */,
++				F1000000000000000000000E /* SensitiveContentPolicy.swift */,
 +				F10000000000000000000003 /* AvatarAnimation.swift */,
 +				F10000000000000000000002 /* VoiceInputSession.swift */,
 +				F10000000000000000000001 /* DotTranscription.swift */,
  				A0000000000000000000000C /* Conversation.swift */,
  				B00000000000000000000001 /* Authentication.swift */,
  				B00000000000000000000002 /* ConnectionSession.swift */,
-@@ -221,6 +254,17 @@
+@@ -221,6 +266,21 @@
  			isa = PBXSourcesBuildPhase;
  			buildActionMask = 2147483647;
  			files = (
@@ -401,6 +542,10 @@
 +				F2000000000000000000000A /* CompanionAvatar.swift in Sources */,
 +				F2000000000000000000000B /* AvatarPickerView.swift in Sources */,
 +				F2000000000000000000000C /* ReplyReaderView.swift in Sources */,
++				F20000000000000000000010 /* HomeInteraction.swift in Sources */,
++				F2000000000000000000000F /* HistoryScrollPolicy.swift in Sources */,
++				F2000000000000000000000E /* SensitiveContentPolicy.swift in Sources */,
++				F2000000000000000000000D /* SensitiveContent.swift in Sources */,
 +				F20000000000000000000006 /* AvatarConversationView.swift in Sources */,
 +				F20000000000000000000005 /* SpriteAvatar.swift in Sources */,
 +				F20000000000000000000004 /* WatchVoiceRecorder.swift in Sources */,
@@ -410,57 +555,57 @@
  				A00000000000000000000010 /* WatchDotApp.swift in Sources */,
  				A00000000000000000000011 /* Conversation.swift in Sources */,
  				B00000000000000000000011 /* Authentication.swift in Sources */,
-@@ -247,7 +291,7 @@
+@@ -247,7 +307,7 @@
  			buildSettings = {
  				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
  				CODE_SIGNING_ALLOWED = YES;
 -                CURRENT_PROJECT_VERSION = 4;
-+                CURRENT_PROJECT_VERSION = 6;
++                CURRENT_PROJECT_VERSION = 7;
                  MARKETING_VERSION = 1.1;
  				GENERATE_INFOPLIST_FILE = YES;
  				INFOPLIST_FILE = WatchDotApp/Info.plist;
-@@ -272,7 +316,7 @@
+@@ -272,7 +332,7 @@
  			buildSettings = {
  				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
  				CODE_SIGNING_ALLOWED = YES;
 -                CURRENT_PROJECT_VERSION = 4;
-+                CURRENT_PROJECT_VERSION = 6;
++                CURRENT_PROJECT_VERSION = 7;
                  MARKETING_VERSION = 1.1;
  				GENERATE_INFOPLIST_FILE = YES;
  				INFOPLIST_FILE = WatchDotApp/Info.plist;
-@@ -312,7 +356,7 @@
+@@ -312,7 +372,7 @@
  		};
  		C00000000000000000000011 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES;
                  CODE_SIGN_STYLE = Automatic;
 -                CURRENT_PROJECT_VERSION = 4;
-+                CURRENT_PROJECT_VERSION = 6;
++                CURRENT_PROJECT_VERSION = 7;
                  MARKETING_VERSION = 1.1;
                  GENERATE_INFOPLIST_FILE = YES;
                  INFOPLIST_FILE = WatchDotComplication/Info.plist;
-@@ -327,7 +371,7 @@
+@@ -327,7 +387,7 @@
                  WATCHOS_DEPLOYMENT_TARGET = 10.0;}; name = Debug; };
  		C00000000000000000000012 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES;
                  CODE_SIGN_STYLE = Automatic;
 -                CURRENT_PROJECT_VERSION = 4;
-+                CURRENT_PROJECT_VERSION = 6;
++                CURRENT_PROJECT_VERSION = 7;
                  MARKETING_VERSION = 1.1;
                  GENERATE_INFOPLIST_FILE = YES;
                  INFOPLIST_FILE = WatchDotComplication/Info.plist;
-@@ -343,7 +387,7 @@
+@@ -343,7 +403,7 @@
          D00000000000000000000014 = {isa = XCBuildConfiguration; buildSettings = {
              ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
              CODE_SIGN_STYLE = Automatic;
 -            CURRENT_PROJECT_VERSION = 4;
-+            CURRENT_PROJECT_VERSION = 6;
++            CURRENT_PROJECT_VERSION = 7;
              MARKETING_VERSION = 1.1;
              GENERATE_INFOPLIST_FILE = YES;
              INFOPLIST_KEY_CFBundleDisplayName = "Watch Dot";
-@@ -360,7 +404,7 @@
+@@ -360,7 +420,7 @@
          D00000000000000000000015 = {isa = XCBuildConfiguration; buildSettings = {
              ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
              CODE_SIGN_STYLE = Automatic;
 -            CURRENT_PROJECT_VERSION = 4;
-+            CURRENT_PROJECT_VERSION = 6;
++            CURRENT_PROJECT_VERSION = 7;
              MARKETING_VERSION = 1.1;
              GENERATE_INFOPLIST_FILE = YES;
              INFOPLIST_KEY_CFBundleDisplayName = "Watch Dot";
@@ -526,16 +671,20 @@
          #endif
          _session = StateObject(wrappedValue: session)
          let bridge = CompanionConnectivity()
-@@ -61,7 +77,7 @@
+@@ -60,8 +76,11 @@
+     var body: some Scene {
          WindowGroup {
              ChatRootView(connection: connection, demo: session)
++                #if DEBUG && targetEnvironment(simulator)
++                .layoutPrivacyPreview(enabled: isLayoutPreview)
++                #endif
                  .onAppear {
 -                    if scenePhase == .active {
 +                    if scenePhase == .active && !isLayoutPreview {
                          connection.enterForeground()
                          refreshComplicationImageIfNeeded()
                      }
-@@ -74,6 +90,7 @@
+@@ -74,6 +93,7 @@
                      if case .located = state { session.suspend() }
                  }
                  .onChange(of: scenePhase) { _, phase in
@@ -543,7 +692,7 @@
                      if phase == .background {
                          session.suspend()
                          connection.enterBackground()
-@@ -107,13 +124,28 @@
+@@ -107,13 +127,28 @@
      }
  
      private func connectChatIfReady() {
@@ -573,7 +722,7 @@
  /// An offline fixture for exercising pull, release and loading without a real account.
  private actor RefreshPreviewTransport: ChatTransport {
      let displayName = "Local preview"
-@@ -147,7 +179,7 @@
+@@ -147,7 +182,7 @@
          NavigationStack {
              Group {
                  if let session = connection.selectedConversation(demo: demo) {
@@ -582,7 +731,12 @@
                  } else {
                      VStack(spacing: 10) {
                          ScrollView {
-@@ -173,10 +205,12 @@
+@@ -169,14 +204,17 @@
+                         }
+                     }
+                     .padding(.horizontal, 8)
++                    .sensitiveContent(placeholder: "Connection hidden")
+                 }
              }
              .frame(maxWidth: .infinity, maxHeight: .infinity)
              .toolbar {
@@ -599,7 +753,7 @@
                      }
                  }
              }
-@@ -184,6 +218,24 @@
+@@ -184,6 +222,24 @@
          .sheet(isPresented: $showConnection) {
              ConnectionView(connection: connection, session: connection.selectedConversation(demo: demo) ?? demo)
          }
@@ -624,22 +778,109 @@
      }
  
      private var connectionColor: Color {
-@@ -226,11 +278,13 @@
+@@ -223,14 +279,21 @@
+         .buttonStyle(.plain)
+         .accessibilityLabel("\(name), connection details")
+         .accessibilityValue(status)
++        .sensitiveContent(placeholder: "Dot")
      }
  }
  
 -private struct ConversationView: View {
 +struct ConversationView: View {
      @Environment(\.scenePhase) private var scenePhase
++    @Environment(\.isLuminanceReduced) private var luminanceReduced
++    @Environment(\.redactionReasons) private var redactionReasons
      @ObservedObject var session: ConversationSession
      @State private var bottomPosition = CGFloat.greatestFiniteMagnitude
++    @State private var scrollPolicy = HistoryScrollPolicy()
++    @State private var scrollRequest = UUID()
      @State private var refreshGestureState = MessageRefreshGestureState()
 +    @FocusState private var inputFocused: Bool
 +    var focusInputOnAppear = false
  
      var body: some View {
          VStack(spacing: 4) {
-@@ -301,6 +355,7 @@
+@@ -245,8 +308,8 @@
+                         VStack(alignment: .leading, spacing: 8) {
+                             if session.messages.isEmpty {
+                                 Text(session.isRealConnection
+-                                     ? "Room verified. Send your Dot a message; the first reply confirms the full connection."
+-                                     : "Local demo, not connected to your Dot. Tap ⓘ to connect.")
++                                     ? "Your conversation starts here."
++                                     : "This demo stays on your watch. Connect from Settings to message your Dot.")
+                                     .font(.footnote).foregroundStyle(.secondary)
+                             }
+                             ForEach(session.messages) { message in
+@@ -256,25 +319,36 @@
+                             statusView
+                             if let issue = session.storageIssue {
+                                 Text(issue).font(.caption2).foregroundStyle(.red)
+-                                Button("Save again", action: session.retrySaving).font(.caption2)
++                                if session.canRetrySaving {
++                                    Button("Save again", action: session.retrySaving).font(.caption2)
++                                }
+                             }
+                             Color.clear.frame(height: 1).id("latest")
+-                                .background(GeometryReader { geometry in
+-                                    Color.clear.preference(key: ChatBottomPosition.self,
+-                                        value: geometry.frame(in: .named("chat-scroll")).maxY)
+-                                })
+                         }
+                         .frame(minHeight: viewport.size.height, alignment: .bottom)
++                        .background(GeometryReader { geometry in
++                            Color.clear.preference(key: ChatHistoryLayout.self,
++                                value: HistoryScrollLayout(revision: contentRevision,
++                                    contentHeight: geometry.size.height, viewportHeight: viewport.size.height,
++                                    bottom: geometry.frame(in: .named("chat-scroll")).maxY))
++                        })
+                     }
+                     .coordinateSpace(name: "chat-scroll")
+-                    .onPreferenceChange(ChatBottomPosition.self) { bottomPosition = $0 }
++                    .onPreferenceChange(ChatHistoryLayout.self) { layout in
++                        guard let layout, layout.revision == contentRevision else { return }
++                        bottomPosition = layout.bottom
++                        let shouldFollow = scrollPolicy.shouldFollow(layout)
++                        scrollPolicy = scrollPolicy.observing(layout)
++                        if shouldFollow && isContentVisible { scrollToLatest(proxy) }
++                    }
+                     .modifier(ChatRefreshObservation(session: session, gestureState: $refreshGestureState,
+                         bottomPosition: bottomPosition, viewportHeight: viewport.size.height,
++                        interactionChanged: { scrollPolicy = scrollPolicy.interacting($0) },
+                         legacyGesture: refreshGesture(atBottom: bottomPosition <= viewport.size.height + 2)))
+                     .overlay(alignment: .bottom) {
+                         if session.isRealConnection && (refreshGestureState.pullDistance > 0 || refreshGestureState.isArmed || session.isSynchronizing) {
+                             Group {
+-                                if session.isSynchronizing { ChatRefreshSpinner() }
++                                if session.isSynchronizing { ProgressView().controlSize(.mini) }
+                                 else {
+                                     Image(systemName: "arrow.clockwise")
+                                         .rotationEffect(.degrees(min(refreshGestureState.pullDistance / refreshThreshold, 1) * 180))
+@@ -289,18 +363,26 @@
+                         }
+                     }
+                     .accessibilityAction(named: Text("Sync messages")) { session.refreshFromGesture() }
+-                    .onChange(of: session.deliveryState) { _, _ in
+-                        withAnimation { proxy.scrollTo("latest", anchor: .bottom) }
++                    .overlay(alignment: .bottom) {
++                        if !scrollPolicy.followsLatest {
++                            Button("Latest", systemImage: "arrow.down", action: jumpToLatest)
++                                .font(.footnote)
++                                .buttonStyle(.borderedProminent)
++                                .fixedSize()
++                                .accessibilityLabel("Latest messages")
++                                .accessibilityIdentifier("history.latest")
++                        }
+                     }
+-                    .onChange(of: session.messages) { _, _ in
+-                        withAnimation { proxy.scrollTo("latest", anchor: .bottom) }
++                    .onChange(of: scrollRequest) { _, _ in scrollToLatest(proxy) }
++                    .onChange(of: isContentVisible) { _, visible in
++                        if visible && scrollPolicy.followsLatest { scrollToLatest(proxy) }
+                     }
+-                    .onAppear { proxy.scrollTo("latest", anchor: .bottom) }
+                 }
+             }
  
              HStack(spacing: 6) {
                  TextField("Message", text: $session.draft)
@@ -647,14 +888,207 @@
                      .font(.footnote)
                      .controlSize(.small)
                      .submitLabel(.done)
-@@ -322,6 +377,7 @@
-         .onChange(of: scenePhase) { _, phase in
-             if phase != .active { refreshGestureState.cancel() }
+@@ -319,12 +401,50 @@
          }
-+        .onAppear { inputFocused = focusInputOnAppear }
+         .padding(.horizontal, 8)
+         .ignoresSafeArea(.container, edges: .bottom)
+-        .onChange(of: scenePhase) { _, phase in
+-            if phase != .active { refreshGestureState.cancel() }
++        .sensitiveContent(placeholder: "History hidden")
++        .onChange(of: isContentVisible) { _, visible in
++            if !visible {
++                inputFocused = false
++                refreshGestureState.cancel()
++                scrollPolicy = scrollPolicy.interacting(false)
++            }
+         }
++        .onAppear { inputFocused = focusInputOnAppear && isContentVisible }
          .task(id: session.conversationID) {
              if scenePhase == .active, !session.isRealConnection { session.resumeAutomatically() }
          }
++    }
++
++    private var isContentVisible: Bool {
++        SensitiveContentPolicy.isVisible(isActive: scenePhase == .active,
++            luminanceReduced: luminanceReduced, privacyRedacted: redactionReasons.contains(.privacy))
++    }
++
++    private var contentRevision: Int {
++        var revision = Hasher()
++        for message in session.messages {
++            revision.combine(message.id)
++            revision.combine(message.text)
++        }
++        revision.combine(String(describing: session.deliveryState))
++        revision.combine(session.storageIssue)
++        revision.combine(session.synchronizationIssue)
++        revision.combine(session.isSynchronizing)
++        revision.combine(session.pendingMessageIDs)
++        return revision.finalize()
++    }
++
++    private func scrollToLatest(_ proxy: ScrollViewProxy) {
++        guard isContentVisible else { return }
++        // Immediate following avoids moving text beneath a reader or VoiceOver focus.
++        var transaction = Transaction()
++        transaction.disablesAnimations = true
++        withTransaction(transaction) { proxy.scrollTo("latest", anchor: .bottom) }
++    }
++
++    private func jumpToLatest() {
++        scrollPolicy = scrollPolicy.jumpingToLatest()
++        scrollRequest = UUID()
+     }
+ 
+     @ViewBuilder
+@@ -387,6 +507,7 @@
+     private func refreshGesture(atBottom: Bool) -> some Gesture {
+         DragGesture(minimumDistance: 8)
+             .onChanged { value in
++                scrollPolicy = scrollPolicy.interacting(true)
+                 if !refreshGestureState.isTracking {
+                     refreshGestureState.begin(enabled: atBottom && session.isRealConnection && !session.isSynchronizing,
+                                               threshold: refreshThreshold)
+@@ -395,17 +516,22 @@
+                 refreshGestureState.update(distance: -value.translation.height)
+             }
+             .onEnded { _ in
++                scrollPolicy = scrollPolicy.interacting(false)
+                 if refreshGestureState.release() { session.refreshFromGesture() }
+             }
+     }
+ 
+-    private func send() { session.send(session.draft) }
++    private func send() {
++        if session.send(session.draft) { jumpToLatest() }
++    }
+ 
+ }
+ 
+-private struct ChatBottomPosition: PreferenceKey {
+-    static let defaultValue = CGFloat.greatestFiniteMagnitude
+-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
++private struct ChatHistoryLayout: PreferenceKey {
++    static let defaultValue: HistoryScrollLayout? = nil
++    static func reduce(value: inout HistoryScrollLayout?, nextValue: () -> HistoryScrollLayout?) {
++        value = nextValue() ?? value
++    }
+ }
+ 
+ /// Observe native scrolling without installing a competing pan recognizer on watchOS 11+.
+@@ -414,6 +540,7 @@
+     @Binding var gestureState: MessageRefreshGestureState
+     let bottomPosition: CGFloat
+     let viewportHeight: CGFloat
++    let interactionChanged: (Bool) -> Void
+     let legacyGesture: LegacyGesture
+     @State private var interacting = false
+ 
+@@ -423,6 +550,7 @@
+             content
+                 .scrollBounceBehavior(.always, axes: .vertical)
+                 .onScrollPhaseChange { oldPhase, phase, context in
++                    interactionChanged(phase != .idle && phase != .animating)
+                     if phase == .tracking || phase == .interacting {
+                         if !gestureState.isTracking {
+                             gestureState.begin(enabled: session.isRealConnection && !session.isSynchronizing)
+@@ -451,7 +579,7 @@
+                 .onChange(of: session.isSynchronizing) { _, refreshing in
+                     if refreshing { gestureState.cancel() }
+                 }
+-                .onDisappear { gestureState.cancel() }
++                .onDisappear { gestureState.cancel(); interactionChanged(false) }
+         } else {
+             content.simultaneousGesture(legacyGesture)
+         }
+@@ -466,18 +594,6 @@
+     }
+ }
+ 
+-private struct ChatRefreshSpinner: View {
+-    @State private var rotating = false
+-
+-    var body: some View {
+-        Image(systemName: "arrow.clockwise")
+-            .foregroundStyle(.blue)
+-            .rotationEffect(.degrees(rotating ? 360 : 0))
+-            .animation(.linear(duration: 0.8).repeatForever(autoreverses: false), value: rotating)
+-            .onAppear { rotating = true }
+-    }
+-}
+-
+ private struct ConnectionView: View {
+     @ObservedObject var connection: ConnectionSession
+     @ObservedObject var session: ConversationSession
+@@ -488,7 +604,8 @@
+         ScrollView {
+             VStack(alignment: .leading, spacing: 12) {
+                 Text(connection.phase.title).font(.headline)
+-                Text("Watch Dot D7 · \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "")").font(.caption2).foregroundStyle(.secondary)
++                Text("Watch Dot · Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""))")
++                    .font(.caption2).foregroundStyle(.secondary)
+                 if let account = connection.accountLabel { Text(account) }
+                 if case .failed(let reason) = connection.phase {
+                     Text(reason).foregroundStyle(.orange)
+@@ -508,7 +625,7 @@
+                     }
+                 }
+                 Text(connection.phase == .signedIn
+-                     ? "A green dot means the account is authorized. Direct chat is still experimental."
++                     ? "Your account is connected. Direct chat is experimental."
+                      : "Authorize your account from Watch Dot on your iPhone. The chat with your Dot runs on the watch.")
+                     .foregroundStyle(.secondary)
+ 
+@@ -531,39 +648,39 @@
+                     ForEach(ChatHistorySettings.limits, id: \.self) { Text("\($0)").tag($0) }
+                 }
+                 .onChange(of: historyLimit) { _, value in ChatHistorySettings.limit = value }
+-                Text("Checks while waiting for your reply and once more after a minute. Opening the app only shows what's saved. At the end of the chat, swipe up until the icon changes color, then release to sync. watchOS may delay delivery.")
++                Text("Replies sync while you wait. To check again, pull up at the end of History. Delivery may be delayed when your wrist is down.")
+                     .font(.caption2).foregroundStyle(.secondary)
+-                Button("Back to chat") { dismiss() }
++                Button("Back to avatar") { dismiss() }
+             }
+             .font(.footnote)
+             .padding(.horizontal, 8)
+         }
++        .sensitiveContent(placeholder: "Account details hidden")
+         .onAppear { connection.refresh() }
+     }
+ 
+     private var dotAccessProbe: some View {
+         VStack(alignment: .leading, spacing: 8) {
+-            Text("Direct chat · experimental D4").font(.caption2).foregroundStyle(.secondary)
++            Text("Connection").font(.headline)
+             if connection.dotProbeState == .checking {
+                 ProgressView("Checking OpenAI…")
+                 Button("Cancel check", action: connection.cancelDotProbe)
+             } else {
+-                Button("Test access to your Dot", action: connection.probeDotAccess)
++                Button("Check connection", action: connection.probeDotAccess)
+             }
+             switch connection.dotProbeState {
+             case .idle:
+-                Text("Looks up your primary Dot and its room. Read-only, directly from the watch.")
++                Text("Check that your watch can reach your Dot.")
+             case .checking:
+                 EmptyView()
+             case .cancelled:
+                 Text("Check canceled. You can run it again.")
+             case .located(let dot):
+-                Text("Primary Dot: \(dot.name ?? "no visible name"). Room and members verified.")
++                Text("Connected to \(dot.name ?? "your Dot").")
+                 Text(session.isRealConnection
+-                     ? (session.deliveryState == .answered ? "Send and reply with your Dot verified."
+-                        : "Direct chat enabled. Go back to the chat and send a message to verify your Dot's reply.")
+-                     : "Room verified. Preparing direct chat…")
+-                    .foregroundStyle(.orange)
++                     ? "Your Dot is available."
++                     : "Preparing your conversation…")
++                    .foregroundStyle(.secondary)
+             case .failed(let message):
+                 Text(message).foregroundStyle(.orange)
+             }
 --- /dev/null
 +++ b/Sources/WatchDotCore/AvatarAnimation.swift
 @@ -0,0 +1,46 @@
@@ -872,14 +1306,156 @@
 +    private struct Transcript: Decodable { let text: String }
 +}
 --- /dev/null
++++ b/Sources/WatchDotCore/HistoryScrollPolicy.swift
+@@ -0,0 +1,61 @@
++/// A revision travels with its measured layout so content growth cannot masquerade as a scroll.
++public struct HistoryScrollLayout: Equatable, Sendable {
++    public let revision: Int
++    public let contentHeight: Double
++    public let viewportHeight: Double
++    public let bottom: Double
++
++    public init(revision: Int, contentHeight: Double, viewportHeight: Double, bottom: Double) {
++        self.revision = revision
++        self.contentHeight = contentHeight
++        self.viewportHeight = viewportHeight
++        self.bottom = bottom
++    }
++
++    public var isAtEnd: Bool { bottom <= viewportHeight + 2 }
++
++    fileprivate var isValid: Bool {
++        contentHeight.isFinite && viewportHeight.isFinite && bottom.isFinite &&
++        contentHeight >= 0 && viewportHeight > 0
++    }
++
++    fileprivate func hasSameContentSize(as other: Self) -> Bool {
++        revision == other.revision && abs(contentHeight - other.contentHeight) < 0.5 &&
++        abs(viewportHeight - other.viewportHeight) < 0.5
++    }
++}
++
++public struct HistoryScrollPolicy: Equatable, Sendable {
++    public let followsLatest: Bool
++    public let isInteracting: Bool
++    public let layout: HistoryScrollLayout?
++
++    public init() { self.init(followsLatest: true, isInteracting: false, layout: nil) }
++
++    private init(followsLatest: Bool, isInteracting: Bool, layout: HistoryScrollLayout?) {
++        self.followsLatest = followsLatest
++        self.isInteracting = isInteracting
++        self.layout = layout
++    }
++
++    public func shouldFollow(_ next: HistoryScrollLayout) -> Bool {
++        guard next.isValid, followsLatest, !isInteracting else { return false }
++        return layout.map { !next.hasSameContentSize(as: $0) } ?? true
++    }
++
++    public func observing(_ next: HistoryScrollLayout) -> Self {
++        guard next.isValid else { return self }
++        let unchangedContent = layout.map { next.hasSameContentSize(as: $0) } ?? false
++        return Self(followsLatest: unchangedContent ? next.isAtEnd : followsLatest,
++                    isInteracting: isInteracting, layout: next)
++    }
++
++    public func interacting(_ active: Bool) -> Self {
++        let follows = isInteracting && !active ? (layout?.isAtEnd ?? followsLatest) : followsLatest
++        return Self(followsLatest: follows, isInteracting: active, layout: layout)
++    }
++
++    public func jumpingToLatest() -> Self {
++        Self(followsLatest: true, isInteracting: false, layout: layout)
++    }
++}
+--- /dev/null
++++ b/Sources/WatchDotCore/HomeInteraction.swift
+@@ -0,0 +1,65 @@
++import Foundation
++
++public struct HomeRecovery: Equatable {
++    public let reason: String
++    public let retryTitle: String?
++    public let canDiscard: Bool
++    public let canSave: Bool
++
++    public init?(delivery: DeliveryState, storageIssue: String?, canSend: Bool,
++                 canRetry: Bool, retryIsReadOnly: Bool, canDiscard: Bool, canRetrySaving: Bool) {
++        if let storageIssue {
++            reason = storageIssue
++        } else {
++            switch delivery {
++            case .failed(let message): reason = message
++            case .cancelled: reason = "Waiting stopped. Your message may still be running."
++            case .waitingForConnection: reason = "Offline. Your message is still pending."
++            case .sending where !canSend: reason = "Sending your message."
++            case .waiting where !canSend: reason = "Waiting for your reply."
++            default:
++                guard !canSend else { return nil }
++                reason = "Review the pending message before starting another."
++            }
++        }
++        retryTitle = storageIssue == nil && canRetry
++            ? (retryIsReadOnly ? "Check for Reply" : "Resume Message") : nil
++        self.canDiscard = storageIssue == nil && canDiscard && !delivery.isActive
++        canSave = storageIssue != nil && canRetrySaving
++    }
++}
++
++public struct VoiceAccessibility: Equatable {
++    public let label: String
++    public let hint: String
++    public let value: String
++
++    public init(phase: VoiceInputPhase, name: String, elapsed: TimeInterval,
++                recoveryReason: String?, isRealConnection: Bool) {
++        switch phase {
++        case .listening:
++            label = "Stop recording and send"
++            hint = "Sends the recording for transcription and delivers the message."
++            let seconds = elapsed.isFinite ? Int(min(60, max(0, elapsed))) : 0
++            value = "Listening, \(seconds) of 60 seconds"
++        case .requesting:
++            label = "Preparing microphone"
++            hint = "Recording starts after microphone access is allowed."
++            value = "Preparing"
++        case .transcribing:
++            label = "Transcribing"
++            hint = "Sends your message when transcription finishes."
++            value = "Working"
++        case .idle, .failed:
++            if let recoveryReason {
++                label = "Review message"
++                hint = "Opens available recovery actions."
++                value = recoveryReason
++            } else {
++                label = name
++                hint = isRealConnection ? "Starts recording a voice message." : "Opens local demo text input."
++                value = isRealConnection ? "Ready to record" : "Demo"
++            }
++        }
++    }
++}
+--- /dev/null
++++ b/Sources/WatchDotCore/SensitiveContentPolicy.swift
+@@ -0,0 +1,7 @@
++/// Content stays private until both the app and its display are ready for the wearer.
++public enum SensitiveContentPolicy {
++    public static func isVisible(isActive: Bool, luminanceReduced: Bool,
++                                 privacyRedacted: Bool) -> Bool {
++        isActive && !luminanceReduced && !privacyRedacted
++    }
++}
+--- /dev/null
 +++ b/Sources/WatchDotCore/VoiceInputSession.swift
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,216 @@
 +import Foundation
 +import Combine
 +
 +public enum VoiceInputIssue: Error, Equatable, LocalizedError {
 +    case permissionDenied, microphoneUnavailable, interrupted, noSpeech, invalidAudio
-+    case unavailable, sessionChanged, malformedResponse, transcriptTooLong, sendRejected
++    case unavailable, sessionChanged, malformedResponse, transcriptTooLong, sendRejected, transcriptionInterrupted
 +    case transcriptionHTTP(Int), challenge
 +
 +    public var message: String {
@@ -887,6 +1463,7 @@
 +        case .permissionDenied: "Allow microphone access in Settings, or use text input."
 +        case .microphoneUnavailable: "The microphone is unavailable. Try again or use text input."
 +        case .interrupted: "Recording was interrupted. Try again."
++        case .transcriptionInterrupted: "Voice input stopped before your message was sent. Try again."
 +        case .noSpeech: "No speech was detected. Try again."
 +        case .invalidAudio: "The recording could not be used. Try again."
 +        case .unavailable: "Voice transcription is unavailable. Try again or use text input."
@@ -942,6 +1519,7 @@
 +}
 +
 +public enum VoiceInputPhase: Equatable { case idle, requesting, listening, transcribing, failed }
++public enum VoiceSceneState { case active, inactive, background }
 +
 +@MainActor public final class VoiceInputSession: ObservableObject {
 +    @Published public private(set) var phase: VoiceInputPhase = .idle
@@ -979,6 +1557,40 @@
 +        turn = nil; startedAt = nil
 +        level = 0; elapsed = 0; errorMessage = nil; retainedTranscript = nil
 +        phase = .idle
++    }
++
++    @discardableResult
++    public func dismissFailure(discardTranscript: Bool = false) -> Bool {
++        guard phase == .failed, retainedTranscript == nil || discardTranscript else { return false }
++        cancel()
++        return true
++    }
++
++    public func sceneChanged(to state: VoiceSceneState) {
++        switch state {
++        case .active: break
++        case .inactive:
++            if phase == .requesting || phase == .listening {
++                interrupt(with: VoiceInputIssue.interrupted.message)
++            }
++        case .background:
++            let message: String?
++            switch phase {
++            case .requesting, .listening: message = VoiceInputIssue.interrupted.message
++            case .transcribing: message = VoiceInputIssue.transcriptionInterrupted.message
++            case .failed: return
++            case .idle: message = nil
++            }
++            interrupt(with: message)
++        }
++    }
++
++    private func interrupt(with message: String?) {
++        cancel()
++        if let message {
++            errorMessage = message
++            phase = .failed
++        }
 +    }
 +
 +    private func begin() {
@@ -1624,6 +2236,195 @@
 +    }
 +}
 --- /dev/null
++++ b/Tests/WatchDotCoreTests/HistoryScrollPolicyTests.swift
+@@ -0,0 +1,80 @@
++import XCTest
++@testable import WatchDotCore
++
++final class HistoryScrollPolicyTests: XCTestCase {
++    func testInitialHistoryFollowsLatest() {
++        let policy = HistoryScrollPolicy()
++        XCTAssertTrue(policy.shouldFollow(layout()))
++        XCTAssertTrue(policy.observing(layout()).followsLatest)
++        XCTAssertNil(policy.layout)
++    }
++
++    func testGrowthPreservesPinnedIntentBeforeAndAfterNewLayout() {
++        let pinned = HistoryScrollPolicy().observing(layout())
++        let grown = layout(revision: 2, height: 600, bottom: 500)
++        XCTAssertTrue(pinned.shouldFollow(grown))
++        let pendingScroll = pinned.observing(grown)
++        XCTAssertTrue(pendingScroll.followsLatest)
++        XCTAssertFalse(pendingScroll.shouldFollow(grown))
++        XCTAssertTrue(pendingScroll.observing(layout(revision: 2, height: 600)).followsLatest)
++    }
++
++    func testRemoteGrowthAndStatusResizeDoNotMoveHistoryReader() {
++        let reading = HistoryScrollPolicy().observing(layout()).observing(layout(bottom: 400))
++        XCTAssertFalse(reading.followsLatest)
++        let newReply = layout(revision: 2, height: 600, bottom: 700)
++        XCTAssertFalse(reading.shouldFollow(newReply))
++        let resized = reading.observing(newReply)
++        XCTAssertFalse(resized.followsLatest)
++        XCTAssertFalse(resized.shouldFollow(layout(revision: 3, height: 650, bottom: 750)))
++    }
++
++    func testViewportAndContentSizeChangesPreserveReadingIntent() {
++        let pinned = HistoryScrollPolicy().observing(layout())
++        let changed = HistoryScrollLayout(revision: 1, contentHeight: 450, viewportHeight: 150, bottom: 300)
++        XCTAssertTrue(pinned.shouldFollow(changed))
++        XCTAssertTrue(pinned.observing(changed).followsLatest)
++        let reading = pinned.observing(layout(bottom: 400))
++        XCTAssertFalse(reading.shouldFollow(changed))
++        XCTAssertFalse(reading.observing(changed).followsLatest)
++    }
++
++    func testInteractionPreventsFollowingAndScrollBackToEndRestoresIt() {
++        let moving = HistoryScrollPolicy().observing(layout()).interacting(true)
++        XCTAssertFalse(moving.shouldFollow(layout(revision: 2, height: 500, bottom: 400)))
++        let reading = moving.observing(layout(bottom: 400)).interacting(false)
++        XCTAssertFalse(reading.followsLatest)
++        let end = reading.observing(layout())
++        XCTAssertTrue(end.followsLatest)
++        XCTAssertTrue(end.shouldFollow(layout(revision: 2, height: 500, bottom: 400)))
++    }
++
++    func testExplicitJumpOrSendReenablesFollowing() {
++        let reading = HistoryScrollPolicy().observing(layout()).observing(layout(bottom: 400))
++        let selected = reading.jumpingToLatest()
++        XCTAssertTrue(selected.followsLatest)
++        XCTAssertFalse(selected.isInteracting)
++        XCTAssertFalse(reading.followsLatest)
++    }
++
++    func testGrowthDuringGestureCannotLeaveStaleFollowIntentAfterRelease() {
++        let tracking = HistoryScrollPolicy().observing(layout()).interacting(true)
++        let grown = layout(revision: 2, height: 500, bottom: 400)
++        XCTAssertFalse(tracking.shouldFollow(grown))
++        let stopped = tracking.observing(grown).interacting(false)
++        XCTAssertFalse(stopped.followsLatest)
++        XCTAssertFalse(stopped.shouldFollow(layout(revision: 3, height: 600, bottom: 500)))
++        XCTAssertTrue(stopped.observing(layout(revision: 2, height: 500)).followsLatest)
++    }
++
++    func testInvalidGeometryDoesNotChangeIntentOrRequestScrolling() {
++        let policy = HistoryScrollPolicy().observing(layout())
++        let invalid = HistoryScrollLayout(revision: 2, contentHeight: .infinity, viewportHeight: 0, bottom: .nan)
++        XCTAssertEqual(policy.observing(invalid), policy)
++        XCTAssertFalse(policy.shouldFollow(invalid))
++    }
++
++    private func layout(revision: Int = 1, height: Double = 300, bottom: Double = 200) -> HistoryScrollLayout {
++        HistoryScrollLayout(revision: revision, contentHeight: height, viewportHeight: 200, bottom: bottom)
++    }
++}
+--- /dev/null
++++ b/Tests/WatchDotCoreTests/HomeInteractionTests.swift
+@@ -0,0 +1,85 @@
++import XCTest
++@testable import WatchDotCore
++
++final class HomeInteractionTests: XCTestCase {
++    private func recovery(delivery: DeliveryState = .idle, storage: String? = nil,
++                          canSend: Bool = true, retry: Bool = false, readOnly: Bool = false,
++                          discard: Bool = false, save: Bool = false) -> HomeRecovery? {
++        HomeRecovery(delivery: delivery, storageIssue: storage, canSend: canSend, canRetry: retry,
++            retryIsReadOnly: readOnly, canDiscard: discard, canRetrySaving: save)
++    }
++
++    func testReadyHomeHasNoRecovery() {
++        XCTAssertNil(recovery())
++        XCTAssertNil(recovery(delivery: .answered))
++        XCTAssertNil(recovery(delivery: .waiting))
++    }
++
++    func testFailureShowsSafeReasonAndReceiptOnlyRetryTitle() {
++        let state = recovery(delivery: .failed("Your message may have arrived."), canSend: false,
++                             retry: true, readOnly: true)
++        XCTAssertEqual(state?.reason, "Your message may have arrived.")
++        XCTAssertEqual(state?.retryTitle, "Check for Reply")
++        XCTAssertEqual(state?.canDiscard, false)
++        XCTAssertEqual(state?.canSave, false)
++    }
++
++    func testKnownUnsentMessageOffersExplicitResumeAndDiscard() {
++        let state = recovery(delivery: .failed("Connection unavailable."), canSend: false,
++                             retry: true, discard: true)
++        XCTAssertEqual(state?.retryTitle, "Resume Message")
++        XCTAssertEqual(state?.canDiscard, true)
++    }
++
++    func testStorageFailureTakesPriorityAndCannotTriggerSendOrDiscard() {
++        let state = recovery(delivery: .failed("Delivery issue"), storage: "Save the history.",
++                             canSend: false, retry: true, discard: true, save: true)
++        XCTAssertEqual(state?.reason, "Save the history.")
++        XCTAssertEqual(state?.canSave, true)
++        XCTAssertNil(state?.retryTitle)
++        XCTAssertEqual(state?.canDiscard, false)
++    }
++
++    func testUnreadableHistoryOffersNoSaveAction() {
++        let state = recovery(storage: "History could not be read. Reopen the app.", canSend: false)
++        XCTAssertEqual(state?.canSave, false)
++        XCTAssertNil(state?.retryTitle)
++    }
++
++    func testActiveTurnCannotBeDiscarded() {
++        for delivery in [DeliveryState.sending, .waiting] {
++            let state = recovery(delivery: delivery, canSend: false, discard: true)
++            XCTAssertNotNil(state)
++            XCTAssertEqual(state?.canDiscard, false)
++            XCTAssertNil(state?.retryTitle)
++        }
++    }
++
++    func testCancelledAndOfflineTurnsExposeRecoveryWithoutAutomaticRetry() {
++        XCTAssertNotNil(recovery(delivery: .cancelled, canSend: false))
++        XCTAssertNotNil(recovery(delivery: .waitingForConnection, canSend: false))
++        XCTAssertNil(recovery(delivery: .waitingForConnection, canSend: false)?.retryTitle)
++    }
++
++    func testListeningAccessibilityDescribesSendingAndWholeSeconds() {
++        let state = VoiceAccessibility(phase: .listening, name: "Companion", elapsed: 2.9,
++            recoveryReason: nil, isRealConnection: true)
++        XCTAssertEqual(state.label, "Stop recording and send")
++        XCTAssertEqual(state.hint, "Sends the recording for transcription and delivers the message.")
++        XCTAssertEqual(state.value, "Listening, 2 of 60 seconds")
++        for elapsed in [-1.0, Double.nan, .infinity] {
++            XCTAssertEqual(VoiceAccessibility(phase: .listening, name: "Companion", elapsed: elapsed,
++                recoveryReason: nil, isRealConnection: true).value, "Listening, 0 of 60 seconds")
++        }
++        XCTAssertEqual(VoiceAccessibility(phase: .listening, name: "Companion", elapsed: 70,
++            recoveryReason: nil, isRealConnection: true).value, "Listening, 60 of 60 seconds")
++    }
++
++    func testBlockedAccessibilityExplainsRecoveryRatherThanRecording() {
++        let state = VoiceAccessibility(phase: .idle, name: "Companion", elapsed: 0,
++            recoveryReason: "Message pending", isRealConnection: true)
++        XCTAssertEqual(state.label, "Review message")
++        XCTAssertEqual(state.value, "Message pending")
++        XCTAssertEqual(state.hint, "Opens available recovery actions.")
++    }
++}
+--- /dev/null
++++ b/Tests/WatchDotCoreTests/SensitiveContentPolicyTests.swift
+@@ -0,0 +1,15 @@
++import XCTest
++@testable import WatchDotCore
++
++final class SensitiveContentPolicyTests: XCTestCase {
++    func testContentVisibleOnlyInActiveUnprotectedDisplay() {
++        for active in [false, true] {
++            for dimmed in [false, true] {
++                for redacted in [false, true] {
++                    XCTAssertEqual(SensitiveContentPolicy.isVisible(isActive: active,
++                        luminanceReduced: dimmed, privacyRedacted: redacted), active && !dimmed && !redacted)
++                }
++            }
++        }
++    }
++}
+--- /dev/null
 +++ b/Tests/WatchDotCoreTests/VoiceConnectionTests.swift
 @@ -0,0 +1,156 @@
 +import XCTest
@@ -1784,7 +2585,7 @@
 +}
 --- /dev/null
 +++ b/Tests/WatchDotCoreTests/VoiceInputSessionTests.swift
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,286 @@
 +import XCTest
 +@testable import WatchDotCore
 +
@@ -1939,6 +2740,137 @@
 +        XCTAssertEqual(session.phase, .failed)
 +        XCTAssertEqual(recorder.starts, 0)
 +    }
++
++    func testInactiveCaptureStopsWithRetainedFeedbackAndNoUpload() async throws {
++        let recorder = VoiceRecorderStub()
++        var uploads = 0
++        let session = VoiceInputSession(recorder: recorder, prepare: {
++            VoiceTurn(transcribe: { _ in uploads += 1; return "text" }, send: { _ in true })
++        })
++        session.tap(); try await settle { session.phase == .listening }
++        session.sceneChanged(to: .inactive)
++        XCTAssertEqual(session.phase, .failed)
++        XCTAssertEqual(session.errorMessage, VoiceInputIssue.interrupted.message)
++        session.sceneChanged(to: .background)
++        session.sceneChanged(to: .active)
++        XCTAssertEqual(session.errorMessage, VoiceInputIssue.interrupted.message)
++        XCTAssertEqual(uploads, 0)
++        XCTAssertEqual(recorder.stops, 0)
++    }
++
++    func testInactivePermissionCompletionCannotStartStaleCapture() async throws {
++        let recorder = VoiceRecorderStub(); recorder.holdPermission = true
++        let session = VoiceInputSession(recorder: recorder, prepare: {
++            VoiceTurn(transcribe: { _ in "text" }, send: { _ in XCTFail("Unexpected send"); return false })
++        })
++        session.tap(); try await settle { recorder.permission != nil }
++        session.sceneChanged(to: .inactive)
++        recorder.release()
++        try await Task.sleep(for: .milliseconds(10))
++        XCTAssertEqual(session.phase, .failed)
++        XCTAssertEqual(session.errorMessage, VoiceInputIssue.interrupted.message)
++        XCTAssertEqual(recorder.stops, 0)
++    }
++
++    func testInactiveTranscriptionFinishesAndSendsExactlyOnce() async throws {
++        let recorder = VoiceRecorderStub()
++        var continuation: CheckedContinuation<String, Never>?
++        var sends: [String] = []
++        let session = VoiceInputSession(recorder: recorder, prepare: {
++            VoiceTurn(transcribe: { _ in await withCheckedContinuation { continuation = $0 } },
++                send: { sends = sends + [$0]; return true })
++        })
++        session.tap(); try await settle { session.phase == .listening }; session.tap()
++        try await settle { continuation != nil }
++        session.sceneChanged(to: .inactive)
++        XCTAssertEqual(session.phase, .transcribing)
++        continuation?.resume(returning: "Send after wrist lowers")
++        try await settle { session.phase == .idle }
++        XCTAssertEqual(sends, ["Send after wrist lowers"])
++        session.sceneChanged(to: .active)
++        XCTAssertEqual(sends.count, 1)
++    }
++
++    func testBackgroundCancelsNonCooperativeTranscriptionWithFeedback() async throws {
++        let recorder = VoiceRecorderStub()
++        var continuation: CheckedContinuation<String, Never>?
++        var sends = 0
++        let session = VoiceInputSession(recorder: recorder, prepare: {
++            VoiceTurn(transcribe: { _ in await withCheckedContinuation { continuation = $0 } },
++                send: { _ in sends += 1; return true })
++        })
++        session.tap(); try await settle { session.phase == .listening }; session.tap()
++        try await settle { continuation != nil }
++        session.sceneChanged(to: .background)
++        XCTAssertEqual(session.phase, .failed)
++        XCTAssertEqual(session.errorMessage, VoiceInputIssue.transcriptionInterrupted.message)
++        continuation?.resume(returning: "Must never send")
++        try await Task.sleep(for: .milliseconds(10))
++        XCTAssertEqual(sends, 0)
++        XCTAssertEqual(session.errorMessage, VoiceInputIssue.transcriptionInterrupted.message)
++    }
++
++    func testBackgroundPreservesCompletedTranscriptUntilExplicitIdentityCancellation() async throws {
++        let recorder = VoiceRecorderStub()
++        let session = VoiceInputSession(recorder: recorder, prepare: {
++            VoiceTurn(transcribe: { _ in "private transcript" }, send: { _ in false })
++        })
++        session.tap(); try await settle { session.phase == .listening }; session.tap()
++        try await settle { session.phase == .failed }
++        XCTAssertNotNil(session.retainedTranscript)
++        session.sceneChanged(to: .background)
++        session.sceneChanged(to: .active)
++        XCTAssertEqual(session.retainedTranscript, "private transcript")
++        XCTAssertEqual(session.errorMessage, VoiceInputIssue.sendRejected.message)
++        session.cancel()
++        XCTAssertNil(session.retainedTranscript)
++        XCTAssertNil(session.errorMessage)
++        XCTAssertEqual(session.phase, .idle)
++    }
++
++    func testDismissFailureDoesNotRecordOrSendAndUnblocksQueuedReplyAfterSheetDismissal() async throws {
++        let recorder = VoiceRecorderStub()
++        var sends = 0
++        let session = VoiceInputSession(recorder: recorder, prepare: {
++            VoiceTurn(transcribe: { _ in "text" }, send: { _ in sends += 1; return true })
++        })
++        session.tap(); try await settle { session.phase == .listening }
++        session.sceneChanged(to: .inactive)
++        let reply = ChatMessage(role: .assistant, text: "An earlier turn completed.")
++        let deferred = AvatarPresentation().receiving([reply], canPresent: session.phase != .failed)
++        XCTAssertEqual(deferred.pendingReplies, [reply])
++        XCTAssertTrue(session.dismissFailure())
++        XCTAssertNil(session.errorMessage)
++        XCTAssertEqual(session.phase, .idle)
++        let whileSheetDismisses = deferred.presentingPending(ifAllowed: false)
++        XCTAssertTrue(whileSheetDismisses.visibleReplies.isEmpty)
++        let afterSheetDismisses = whileSheetDismisses.presentingPending(ifAllowed: session.phase != .failed)
++        XCTAssertEqual(afterSheetDismisses.visibleReplies, [reply])
++        XCTAssertEqual(recorder.starts, 1)
++        XCTAssertEqual(recorder.stops, 0)
++        XCTAssertEqual(sends, 0)
++    }
++
++    func testDismissRequiresExplicitTranscriptDiscardAndNeverRestartsInput() async throws {
++        let recorder = VoiceRecorderStub()
++        var sends = 0
++        let session = VoiceInputSession(recorder: recorder, prepare: {
++            VoiceTurn(transcribe: { _ in "review this first" }, send: { _ in sends += 1; return false })
++        })
++        XCTAssertFalse(session.dismissFailure())
++        session.tap(); try await settle { session.phase == .listening }
++        XCTAssertFalse(session.dismissFailure(discardTranscript: true))
++        XCTAssertEqual(session.phase, .listening)
++        session.tap(); try await settle { session.phase == .failed }
++        XCTAssertFalse(session.dismissFailure())
++        XCTAssertEqual(session.retainedTranscript, "review this first")
++        XCTAssertTrue(session.dismissFailure(discardTranscript: true))
++        XCTAssertNil(session.retainedTranscript)
++        XCTAssertNil(session.errorMessage)
++        XCTAssertEqual(session.phase, .idle)
++        XCTAssertEqual(recorder.starts, 1)
++        XCTAssertEqual(sends, 1)
++    }
 +}
 --- /dev/null
 +++ b/WatchDotApp/Assets.xcassets/AvatarAtlas.imageset/Contents.json
@@ -1956,13 +2888,14 @@
 +}
 --- /dev/null
 +++ b/WatchDotApp/AvatarConversationView.swift
-@@ -0,0 +1,320 @@
+@@ -0,0 +1,402 @@
 +import SwiftUI
 +import WatchKit
 +
 +struct AvatarConversationView: View {
 +    @Environment(\.scenePhase) private var scenePhase
 +    @Environment(\.isLuminanceReduced) private var luminanceReduced
++    @Environment(\.redactionReasons) private var redactionReasons
 +    @ObservedObject var session: ConversationSession
 +    @ObservedObject var connection: ConnectionSession
 +    @StateObject private var voice: VoiceInputSession
@@ -1979,7 +2912,7 @@
 +    let showSettings: () -> Void
 +
 +    private enum Destination: String, Identifiable {
-+        case menu, text, voiceError
++        case menu, text, voiceError, recovery
 +        var id: String { rawValue }
 +    }
 +
@@ -2013,7 +2946,7 @@
 +            status
 +            if captureBusy {
 +                Button("Cancel") { voice.cancel(); noteActivity() }
-+                    .font(.footnote).buttonStyle(.plain).frame(minHeight: 32)
++                    .font(.footnote).buttonStyle(.plain).frame(minHeight: 44)
 +                    .accessibilityIdentifier("avatar.cancel")
 +            }
 +        }
@@ -2022,10 +2955,10 @@
 +        .toolbar {
 +            ToolbarItem(placement: .topBarLeading) {
 +                Button { noteActivity(); destination = .menu } label: {
-+                    Image(systemName: "ellipsis").font(.system(size: 16))
++                    Image(systemName: "ellipsis").font(.body)
 +                }
 +                .buttonStyle(.plain)
-+                .disabled(captureBusy || session.deliveryState == .sending)
++                .disabled(!isContentVisible || captureBusy || session.deliveryState == .sending)
 +                .accessibilityLabel("Options")
 +                .accessibilityHint("Text input, history, avatar and settings")
 +                .accessibilityIdentifier("avatar.menu")
@@ -2044,12 +2977,13 @@
 +                    ConversationView(session: session, focusInputOnAppear: true).navigationTitle("Message")
 +                case .voiceError:
 +                    voiceErrorDetails
++                case .recovery:
++                    recoveryDetails
 +                }
 +            }
 +        }
 +        .fullScreenCover(isPresented: replyPresented, onDismiss: replyDismissed) {
-+            ReplyReaderView(replies: presentation.visibleReplies, name: session.transportName,
-+                            close: closeReply)
++            ReplyReaderView(replies: presentation.visibleReplies, close: closeReply)
 +        }
 +        .onChange(of: session.receivedReplies) { _, replies in
 +            presentation = presentation.receiving(replies, canPresent: canPresentReply)
@@ -2058,17 +2992,24 @@
 +            if selected != nil { sheetVisible = true }
 +        }
 +        .onChange(of: scenePhase) { _, phase in
-+            if phase != .active { retryAfterDismiss = false; voice.cancel() }
-+            else { noteActivity(); presentPendingReply() }
++            if phase != .active { retryAfterDismiss = false }
++            voice.sceneChanged(to: phase == .active ? .active : phase == .background ? .background : .inactive)
++            rememberVoiceFailure()
++            if phase == .active { noteActivity(); presentPendingReply() }
 +        }
 +        .onChange(of: luminanceReduced) { _, reduced in
 +            if !reduced { presentPendingReply() }
 +        }
++        .onChange(of: redactionReasons) { _, _ in presentPendingReply() }
 +        .onChange(of: connection.voiceGeneration) { _, _ in
-+            // Background cancellation invalidates voice work, not unread replies.
-+            voice.cancel()
 +            retryAfterDismiss = false
-+            voiceFailure = nil
++            if scenePhase == .background && connection.directConversation === session && connection.phase == .signedIn {
++                voice.sceneChanged(to: .background)
++                rememberVoiceFailure()
++            } else {
++                voice.cancel()
++                voiceFailure = nil
++            }
 +        }
 +        .onChange(of: session.conversationID) { _, _ in resetPresentation() }
 +        .onChange(of: voice.phase) { previous, phase in
@@ -2077,9 +3018,7 @@
 +                else if phase == .failed { WKInterfaceDevice.current().play(.failure) }
 +                else if previous == .listening { WKInterfaceDevice.current().play(.stop) }
 +            }
-+            if phase == .failed, let message = voice.errorMessage {
-+                voiceFailure = VoiceFailure(message: message, transcript: voice.retainedTranscript)
-+            }
++            rememberVoiceFailure()
 +            noteActivity()
 +            presentPendingReply()
 +        }
@@ -2092,7 +3031,11 @@
 +        }
 +        .onDisappear {
 +            // A reply cover also hides the home. It must not reset the presentation queue.
-+            if captureBusy { retryAfterDismiss = false; voice.cancel() }
++            if captureBusy {
++                retryAfterDismiss = false
++                voice.sceneChanged(to: .background)
++                rememberVoiceFailure()
++            }
 +        }
 +        .task(id: activityID) {
 +            guard canBecomeQuiet else { return }
@@ -2112,24 +3055,32 @@
 +    private var avatarButton: some View {
 +        Button {
 +            noteActivity()
-+            if session.isRealConnection { voiceFailure = nil; voice.tap() }
++            if voice.phase != .listening && !session.canSend { destination = .recovery }
++            else if session.isRealConnection { voiceFailure = nil; voice.tap() }
 +            else { openTextInput() }
 +        } label: {
 +            CompanionAvatar(appearance: appearance, animation: avatarAnimation, level: voice.level)
 +                .contentShape(Rectangle())
 +        }
 +        .buttonStyle(.plain)
-+        .disabled(!isContentVisible || voice.phase == .requesting || voice.phase == .transcribing ||
-+                  (voice.phase != .listening && !session.canSend))
-+        .accessibilityLabel(voice.phase == .listening ? "Stop recording and send"
-+                            : appearance.displayName(spriteName: session.transportName))
-+        .accessibilityHint(session.isRealConnection ? "Double-tap to speak" : "Opens local demo text input")
++        .disabled(!isContentVisible || voice.phase == .requesting || voice.phase == .transcribing)
++        .accessibilityLabel(isContentVisible ? voiceAccessibility.label : "Voice input")
++        .accessibilityHint(isContentVisible ? voiceAccessibility.hint : "")
++        .accessibilityValue(isContentVisible ? voiceAccessibility.value : "")
 +        .accessibilityIdentifier("avatar.talk")
 +    }
 +
 +    @ViewBuilder private var status: some View {
 +        if !isContentVisible {
 +            Text("Tap to speak").font(.footnote).foregroundStyle(.secondary)
++        } else if let recovery, !captureBusy {
++            Button { destination = .recovery } label: {
++                Text(recovery.reason).font(.footnote).foregroundStyle(.orange).lineLimit(2)
++            }
++            .buttonStyle(.plain)
++            .accessibilityLabel(recovery.reason)
++            .accessibilityHint("Opens available recovery actions.")
++            .accessibilityIdentifier("avatar.recovery")
 +        } else if let failure = voiceFailure {
 +            Button { destination = .voiceError } label: {
 +                Text(failure.message).font(.footnote).foregroundStyle(.orange).lineLimit(2)
@@ -2148,32 +3099,95 @@
 +    private var voiceErrorDetails: some View {
 +        ScrollView {
 +            VStack(alignment: .leading, spacing: 10) {
-+                if isContentVisible {
-+                    Text(voiceFailure?.message ?? "Voice input is unavailable.")
-+                    if let transcript = voiceFailure?.transcript {
-+                        Text(transcript).foregroundStyle(.secondary)
-+                        Button(session.draft.isEmpty ? "Review transcript" : "Replace draft with transcript") {
-+                            session.draft = transcript
-+                            openTextInput()
-+                        }
++                Text(voiceFailure?.message ?? "Voice input is unavailable.")
++                if let transcript = voiceFailure?.transcript {
++                    Text(transcript).foregroundStyle(.secondary)
++                    Button(session.draft.isEmpty ? "Review transcript" : "Replace draft with transcript") {
++                        session.draft = transcript
++                        openTextInput()
 +                    }
-+                    Button(textInputTitle, action: openTextInput)
-+                    Button("Try again") { retryAfterDismiss = true; destination = nil }
-+                        .disabled(!session.canSend)
++                    .disabled(!session.canEditDraft)
++                }
++                Button(textInputTitle, action: openTextInput)
++                Button(voiceFailure?.transcript == nil ? "Try Again" : "Discard and Try Again") {
++                    retryAfterDismiss = true; destination = nil
++                }
++                .disabled(!session.canSend)
++                if voiceFailure?.transcript == nil {
++                    Button("Dismiss", action: dismissVoiceError)
 +                } else {
-+                    Text("Voice input details hidden")
++                    Button("Discard Transcript", role: .destructive, action: dismissVoiceError)
 +                }
 +            }
 +            .font(.body).padding(.horizontal, 8)
 +        }
 +        .navigationTitle("Voice input")
++        .sensitiveContent(placeholder: "Voice input details hidden")
++    }
++
++    private func dismissVoiceError() {
++        guard voice.dismissFailure(discardTranscript: voiceFailure?.transcript != nil) else { return }
++        voiceFailure = nil
++        retryAfterDismiss = false
++        destination = nil
++        noteActivity()
++    }
++
++    private var recoveryDetails: some View {
++        ScrollView {
++            VStack(alignment: .leading, spacing: 10) {
++                if let recovery {
++                    Text(recovery.reason)
++                    if recovery.canSave {
++                        Button("Save Again", action: session.retrySaving)
++                    }
++                    if let title = recovery.retryTitle {
++                        Button(title, action: session.retry)
++                    }
++                    if recovery.canDiscard {
++                        Button(session.isRealConnection ? "Discard Unsent" : "Discard Demo", role: .destructive,
++                               action: session.discardFailedTurn)
++                    }
++                } else {
++                    Text("Ready for a new message.")
++                }
++                Button("Connection Settings") { settingsAfterDismiss = true; destination = nil }
++                Button("Done") { destination = nil }
++            }
++            .font(.body)
++            .scenePadding(.horizontal)
++        }
++        .navigationTitle("Message")
++        .sensitiveContent(placeholder: "Message details hidden")
++        .accessibilityIdentifier("avatar.recovery.details")
++    }
++
++    private var recovery: HomeRecovery? {
++        HomeRecovery(delivery: session.deliveryState, storageIssue: session.storageIssue,
++            canSend: session.canSend, canRetry: session.canRetry, retryIsReadOnly: session.retryIsReadOnly,
++            canDiscard: session.canDiscard, canRetrySaving: session.canRetrySaving)
++    }
++
++    private var voiceAccessibility: VoiceAccessibility {
++        VoiceAccessibility(phase: voice.phase, name: appearance.displayName(spriteName: session.transportName),
++            elapsed: voice.elapsed, recoveryReason: session.canSend ? nil : recovery?.reason,
++            isRealConnection: session.isRealConnection)
++    }
++
++    private func rememberVoiceFailure() {
++        if voice.phase == .failed, let message = voice.errorMessage {
++            voiceFailure = VoiceFailure(message: message, transcript: voice.retainedTranscript)
++        }
 +    }
 +
 +    private var captureBusy: Bool {
 +        voice.phase == .requesting || voice.phase == .listening || voice.phase == .transcribing
 +    }
 +
-+    private var isContentVisible: Bool { scenePhase == .active && !luminanceReduced }
++    private var isContentVisible: Bool {
++        SensitiveContentPolicy.isVisible(isActive: scenePhase == .active,
++            luminanceReduced: luminanceReduced, privacyRedacted: redactionReasons.contains(.privacy))
++    }
 +
 +    private var canPresentReply: Bool {
 +        isContentVisible && !captureBusy && voiceFailure == nil && destination == nil && !sheetVisible &&
@@ -2196,7 +3210,7 @@
 +    private var statusText: String {
 +        switch voice.phase {
 +        case .requesting: return "Preparing microphone"
-+        case .listening: return "Listening \(Int(min(voice.elapsed, 60))) / 60s"
++        case .listening: return "Listening \(Int(min(voice.elapsed, 60))) / 60s\nTap to send"
 +        case .transcribing: return "Transcribing"
 +        case .failed: return "Voice input unavailable"
 +        case .idle: break
@@ -2205,7 +3219,7 @@
 +        case .sending: return "Sending"
 +        case .waiting: return "Waiting for reply"
 +        case .waitingForConnection: return "Offline, message pending"
-+        case .failed, .cancelled: return "Open history to review delivery"
++        case .failed, .cancelled: return "Review message"
 +        case .idle, .answered: return session.isRealConnection ? "Tap to speak" : "Tap for demo text input"
 +        }
 +    }
@@ -2279,7 +3293,7 @@
 +}
 --- /dev/null
 +++ b/WatchDotApp/AvatarPickerView.swift
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,58 @@
 +import SwiftUI
 +
 +struct AvatarPickerView: View {
@@ -2304,6 +3318,7 @@
 +            .tabViewStyle(.verticalPage)
 +            .frame(width: geometry.size.width, height: geometry.size.height)
 +        }
++        .sensitiveContent(placeholder: "Avatars hidden")
 +        .navigationTitle("")
 +        .toolbarTitleDisplayMode(.inline)
 +        .onAppear { preview = selected }
@@ -2514,43 +3529,50 @@
 +}
 --- /dev/null
 +++ b/WatchDotApp/ReplyReaderView.swift
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,93 @@
 +import SwiftUI
 +
 +struct ReplyReaderView: View {
 +    @Environment(\.scenePhase) private var scenePhase
 +    @Environment(\.isLuminanceReduced) private var luminanceReduced
++    @Environment(\.redactionReasons) private var redactionReasons
 +    let replies: [ChatMessage]
-+    let name: String
 +    let close: () -> Void
 +
 +    var body: some View {
 +        NavigationStack {
 +            ScrollView {
 +                VStack(alignment: .leading, spacing: 16) {
-+                    if scenePhase == .active && !luminanceReduced {
-+                        ForEach(replies) { reply in
-+                            if reply.id != replies.first?.id { Divider() }
-+                            Text(reply.text)
-+                                .font(.body)
-+                                .frame(maxWidth: .infinity, alignment: .leading)
-+                                .fixedSize(horizontal: false, vertical: true)
-+                                .accessibilityIdentifier("reply.text")
-+                        }
-+                    } else {
-+                        Text("Reply hidden").foregroundStyle(.secondary)
++                    ForEach(replies) { reply in
++                        if reply.id != replies.first?.id { Divider() }
++                        Text(reply.text)
++                            .font(.body)
++                            .frame(maxWidth: .infinity, alignment: .leading)
++                            .fixedSize(horizontal: false, vertical: true)
++                            .accessibilityIdentifier("reply.text")
 +                    }
 +                    Button("Done", action: close)
 +                        .accessibilityIdentifier("reply.done")
 +                }
 +                .padding(.horizontal, 8)
++                .sensitiveContent(placeholder: nil)
 +            }
-+            .navigationTitle(name)
++            .overlay {
++                if !isContentVisible {
++                    Text("Reply hidden")
++                        .font(.footnote)
++                        .foregroundStyle(.secondary)
++                        .unredacted()
++                        .allowsHitTesting(false)
++                }
++            }
++            .navigationTitle("Reply")
 +            .toolbar {
 +                ToolbarItem(placement: .topBarLeading) {
 +                    Button(action: close) {
 +                        Image(systemName: "arrow.uturn.backward")
 +                    }
++                    .disabled(!isContentVisible)
 +                    .accessibilityLabel("Back to avatar")
 +                    .accessibilityIdentifier("reply.close")
 +                }
@@ -2558,6 +3580,11 @@
 +        }
 +        .background(.black)
 +        .accessibilityIdentifier("reply.reader")
++    }
++
++    private var isContentVisible: Bool {
++        SensitiveContentPolicy.isVisible(isActive: scenePhase == .active,
++            luminanceReduced: luminanceReduced, privacyRedacted: redactionReasons.contains(.privacy))
 +    }
 +}
 +
@@ -2596,6 +3623,91 @@
 +        .navigationTitle("Options")
 +    }
 +}
+--- /dev/null
++++ b/WatchDotApp/SensitiveContent.swift
+@@ -0,0 +1,82 @@
++import SwiftUI
++
++private struct SensitiveContent: ViewModifier {
++    @Environment(\.scenePhase) private var scenePhase
++    @Environment(\.isLuminanceReduced) private var luminanceReduced
++    @Environment(\.redactionReasons) private var redactionReasons
++    let placeholder: String?
++
++    private var isVisible: Bool {
++        SensitiveContentPolicy.isVisible(isActive: scenePhase == .active,
++            luminanceReduced: luminanceReduced, privacyRedacted: redactionReasons.contains(.privacy))
++    }
++
++    func body(content: Content) -> some View {
++        content
++            .privacySensitive()
++            .opacity(isVisible ? 1 : 0)
++            .accessibilityHidden(!isVisible)
++            .allowsHitTesting(isVisible)
++            .overlay {
++                if !isVisible, let placeholder {
++                    Text(placeholder)
++                        .font(.footnote)
++                        .foregroundStyle(.secondary)
++                        .multilineTextAlignment(.center)
++                        .unredacted()
++                        .allowsHitTesting(false)
++                }
++            }
++            .transaction { if !isVisible { $0.animation = nil } }
++    }
++}
++
++extension View {
++    func sensitiveContent(placeholder: String? = "Content hidden") -> some View {
++        modifier(SensitiveContent(placeholder: placeholder))
++    }
++}
++
++#if DEBUG && targetEnvironment(simulator)
++private struct LayoutPrivacyPreview: ViewModifier {
++    enum Mode { case privacy, luminance }
++
++    @Environment(\.redactionReasons) private var redactionReasons
++    @Environment(\.isLuminanceReduced) private var luminanceReduced
++    @State private var isProtected = false
++    let mode: Mode
++
++    func body(content: Content) -> some View {
++        content
++            .environment(\.redactionReasons,
++                redactionReasons.union(isProtected && mode == .privacy ? .privacy : []))
++            .environment(\.isLuminanceReduced,
++                luminanceReduced || (isProtected && mode == .luminance))
++            .task {
++                do {
++                    while !Task.isCancelled {
++                        try await Task.sleep(for: .seconds(12))
++                        isProtected = true
++                        try await Task.sleep(for: .seconds(6))
++                        isProtected = false
++                    }
++                } catch {
++                    isProtected = false
++                }
++            }
++    }
++}
++
++extension View {
++    @ViewBuilder func layoutPrivacyPreview(enabled: Bool) -> some View {
++        let arguments = ProcessInfo.processInfo.arguments
++        let privacy = arguments.contains("--preview-privacy")
++        let luminance = arguments.contains("--preview-luminance")
++        if enabled && privacy != luminance {
++            modifier(LayoutPrivacyPreview(mode: privacy ? .privacy : .luminance))
++        } else {
++            self
++        }
++    }
++}
++#endif
 --- /dev/null
 +++ b/WatchDotApp/SpriteAvatar.swift
 @@ -0,0 +1,36 @@

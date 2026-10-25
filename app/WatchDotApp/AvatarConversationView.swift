@@ -4,6 +4,7 @@ import WatchKit
 struct AvatarConversationView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.isLuminanceReduced) private var luminanceReduced
+    @Environment(\.redactionReasons) private var redactionReasons
     @ObservedObject var session: ConversationSession
     @ObservedObject var connection: ConnectionSession
     @StateObject private var voice: VoiceInputSession
@@ -20,7 +21,7 @@ struct AvatarConversationView: View {
     let showSettings: () -> Void
 
     private enum Destination: String, Identifiable {
-        case menu, text, voiceError
+        case menu, text, voiceError, recovery
         var id: String { rawValue }
     }
 
@@ -54,7 +55,7 @@ struct AvatarConversationView: View {
             status
             if captureBusy {
                 Button("Cancel") { voice.cancel(); noteActivity() }
-                    .font(.footnote).buttonStyle(.plain).frame(minHeight: 32)
+                    .font(.footnote).buttonStyle(.plain).frame(minHeight: 44)
                     .accessibilityIdentifier("avatar.cancel")
             }
         }
@@ -63,10 +64,10 @@ struct AvatarConversationView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button { noteActivity(); destination = .menu } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 16))
+                    Image(systemName: "ellipsis").font(.body)
                 }
                 .buttonStyle(.plain)
-                .disabled(captureBusy || session.deliveryState == .sending)
+                .disabled(!isContentVisible || captureBusy || session.deliveryState == .sending)
                 .accessibilityLabel("Options")
                 .accessibilityHint("Text input, history, avatar and settings")
                 .accessibilityIdentifier("avatar.menu")
@@ -85,12 +86,13 @@ struct AvatarConversationView: View {
                     ConversationView(session: session, focusInputOnAppear: true).navigationTitle("Message")
                 case .voiceError:
                     voiceErrorDetails
+                case .recovery:
+                    recoveryDetails
                 }
             }
         }
         .fullScreenCover(isPresented: replyPresented, onDismiss: replyDismissed) {
-            ReplyReaderView(replies: presentation.visibleReplies, name: session.transportName,
-                            close: closeReply)
+            ReplyReaderView(replies: presentation.visibleReplies, close: closeReply)
         }
         .onChange(of: session.receivedReplies) { _, replies in
             presentation = presentation.receiving(replies, canPresent: canPresentReply)
@@ -99,17 +101,24 @@ struct AvatarConversationView: View {
             if selected != nil { sheetVisible = true }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { retryAfterDismiss = false; voice.cancel() }
-            else { noteActivity(); presentPendingReply() }
+            if phase != .active { retryAfterDismiss = false }
+            voice.sceneChanged(to: phase == .active ? .active : phase == .background ? .background : .inactive)
+            rememberVoiceFailure()
+            if phase == .active { noteActivity(); presentPendingReply() }
         }
         .onChange(of: luminanceReduced) { _, reduced in
             if !reduced { presentPendingReply() }
         }
+        .onChange(of: redactionReasons) { _, _ in presentPendingReply() }
         .onChange(of: connection.voiceGeneration) { _, _ in
-            // Background cancellation invalidates voice work, not unread replies.
-            voice.cancel()
             retryAfterDismiss = false
-            voiceFailure = nil
+            if scenePhase == .background && connection.directConversation === session && connection.phase == .signedIn {
+                voice.sceneChanged(to: .background)
+                rememberVoiceFailure()
+            } else {
+                voice.cancel()
+                voiceFailure = nil
+            }
         }
         .onChange(of: session.conversationID) { _, _ in resetPresentation() }
         .onChange(of: voice.phase) { previous, phase in
@@ -118,9 +127,7 @@ struct AvatarConversationView: View {
                 else if phase == .failed { WKInterfaceDevice.current().play(.failure) }
                 else if previous == .listening { WKInterfaceDevice.current().play(.stop) }
             }
-            if phase == .failed, let message = voice.errorMessage {
-                voiceFailure = VoiceFailure(message: message, transcript: voice.retainedTranscript)
-            }
+            rememberVoiceFailure()
             noteActivity()
             presentPendingReply()
         }
@@ -133,7 +140,11 @@ struct AvatarConversationView: View {
         }
         .onDisappear {
             // A reply cover also hides the home. It must not reset the presentation queue.
-            if captureBusy { retryAfterDismiss = false; voice.cancel() }
+            if captureBusy {
+                retryAfterDismiss = false
+                voice.sceneChanged(to: .background)
+                rememberVoiceFailure()
+            }
         }
         .task(id: activityID) {
             guard canBecomeQuiet else { return }
@@ -153,24 +164,32 @@ struct AvatarConversationView: View {
     private var avatarButton: some View {
         Button {
             noteActivity()
-            if session.isRealConnection { voiceFailure = nil; voice.tap() }
+            if voice.phase != .listening && !session.canSend { destination = .recovery }
+            else if session.isRealConnection { voiceFailure = nil; voice.tap() }
             else { openTextInput() }
         } label: {
             CompanionAvatar(appearance: appearance, animation: avatarAnimation, level: voice.level)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!isContentVisible || voice.phase == .requesting || voice.phase == .transcribing ||
-                  (voice.phase != .listening && !session.canSend))
-        .accessibilityLabel(voice.phase == .listening ? "Stop recording and send"
-                            : appearance.displayName(spriteName: session.transportName))
-        .accessibilityHint(session.isRealConnection ? "Double-tap to speak" : "Opens local demo text input")
+        .disabled(!isContentVisible || voice.phase == .requesting || voice.phase == .transcribing)
+        .accessibilityLabel(isContentVisible ? voiceAccessibility.label : "Voice input")
+        .accessibilityHint(isContentVisible ? voiceAccessibility.hint : "")
+        .accessibilityValue(isContentVisible ? voiceAccessibility.value : "")
         .accessibilityIdentifier("avatar.talk")
     }
 
     @ViewBuilder private var status: some View {
         if !isContentVisible {
             Text("Tap to speak").font(.footnote).foregroundStyle(.secondary)
+        } else if let recovery, !captureBusy {
+            Button { destination = .recovery } label: {
+                Text(recovery.reason).font(.footnote).foregroundStyle(.orange).lineLimit(2)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(recovery.reason)
+            .accessibilityHint("Opens available recovery actions.")
+            .accessibilityIdentifier("avatar.recovery")
         } else if let failure = voiceFailure {
             Button { destination = .voiceError } label: {
                 Text(failure.message).font(.footnote).foregroundStyle(.orange).lineLimit(2)
@@ -189,32 +208,95 @@ struct AvatarConversationView: View {
     private var voiceErrorDetails: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                if isContentVisible {
-                    Text(voiceFailure?.message ?? "Voice input is unavailable.")
-                    if let transcript = voiceFailure?.transcript {
-                        Text(transcript).foregroundStyle(.secondary)
-                        Button(session.draft.isEmpty ? "Review transcript" : "Replace draft with transcript") {
-                            session.draft = transcript
-                            openTextInput()
-                        }
+                Text(voiceFailure?.message ?? "Voice input is unavailable.")
+                if let transcript = voiceFailure?.transcript {
+                    Text(transcript).foregroundStyle(.secondary)
+                    Button(session.draft.isEmpty ? "Review transcript" : "Replace draft with transcript") {
+                        session.draft = transcript
+                        openTextInput()
                     }
-                    Button(textInputTitle, action: openTextInput)
-                    Button("Try again") { retryAfterDismiss = true; destination = nil }
-                        .disabled(!session.canSend)
+                    .disabled(!session.canEditDraft)
+                }
+                Button(textInputTitle, action: openTextInput)
+                Button(voiceFailure?.transcript == nil ? "Try Again" : "Discard and Try Again") {
+                    retryAfterDismiss = true; destination = nil
+                }
+                .disabled(!session.canSend)
+                if voiceFailure?.transcript == nil {
+                    Button("Dismiss", action: dismissVoiceError)
                 } else {
-                    Text("Voice input details hidden")
+                    Button("Discard Transcript", role: .destructive, action: dismissVoiceError)
                 }
             }
             .font(.body).padding(.horizontal, 8)
         }
         .navigationTitle("Voice input")
+        .sensitiveContent(placeholder: "Voice input details hidden")
+    }
+
+    private func dismissVoiceError() {
+        guard voice.dismissFailure(discardTranscript: voiceFailure?.transcript != nil) else { return }
+        voiceFailure = nil
+        retryAfterDismiss = false
+        destination = nil
+        noteActivity()
+    }
+
+    private var recoveryDetails: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                if let recovery {
+                    Text(recovery.reason)
+                    if recovery.canSave {
+                        Button("Save Again", action: session.retrySaving)
+                    }
+                    if let title = recovery.retryTitle {
+                        Button(title, action: session.retry)
+                    }
+                    if recovery.canDiscard {
+                        Button(session.isRealConnection ? "Discard Unsent" : "Discard Demo", role: .destructive,
+                               action: session.discardFailedTurn)
+                    }
+                } else {
+                    Text("Ready for a new message.")
+                }
+                Button("Connection Settings") { settingsAfterDismiss = true; destination = nil }
+                Button("Done") { destination = nil }
+            }
+            .font(.body)
+            .scenePadding(.horizontal)
+        }
+        .navigationTitle("Message")
+        .sensitiveContent(placeholder: "Message details hidden")
+        .accessibilityIdentifier("avatar.recovery.details")
+    }
+
+    private var recovery: HomeRecovery? {
+        HomeRecovery(delivery: session.deliveryState, storageIssue: session.storageIssue,
+            canSend: session.canSend, canRetry: session.canRetry, retryIsReadOnly: session.retryIsReadOnly,
+            canDiscard: session.canDiscard, canRetrySaving: session.canRetrySaving)
+    }
+
+    private var voiceAccessibility: VoiceAccessibility {
+        VoiceAccessibility(phase: voice.phase, name: appearance.displayName(spriteName: session.transportName),
+            elapsed: voice.elapsed, recoveryReason: session.canSend ? nil : recovery?.reason,
+            isRealConnection: session.isRealConnection)
+    }
+
+    private func rememberVoiceFailure() {
+        if voice.phase == .failed, let message = voice.errorMessage {
+            voiceFailure = VoiceFailure(message: message, transcript: voice.retainedTranscript)
+        }
     }
 
     private var captureBusy: Bool {
         voice.phase == .requesting || voice.phase == .listening || voice.phase == .transcribing
     }
 
-    private var isContentVisible: Bool { scenePhase == .active && !luminanceReduced }
+    private var isContentVisible: Bool {
+        SensitiveContentPolicy.isVisible(isActive: scenePhase == .active,
+            luminanceReduced: luminanceReduced, privacyRedacted: redactionReasons.contains(.privacy))
+    }
 
     private var canPresentReply: Bool {
         isContentVisible && !captureBusy && voiceFailure == nil && destination == nil && !sheetVisible &&
@@ -237,7 +319,7 @@ struct AvatarConversationView: View {
     private var statusText: String {
         switch voice.phase {
         case .requesting: return "Preparing microphone"
-        case .listening: return "Listening \(Int(min(voice.elapsed, 60))) / 60s"
+        case .listening: return "Listening \(Int(min(voice.elapsed, 60))) / 60s\nTap to send"
         case .transcribing: return "Transcribing"
         case .failed: return "Voice input unavailable"
         case .idle: break
@@ -246,7 +328,7 @@ struct AvatarConversationView: View {
         case .sending: return "Sending"
         case .waiting: return "Waiting for reply"
         case .waitingForConnection: return "Offline, message pending"
-        case .failed, .cancelled: return "Open history to review delivery"
+        case .failed, .cancelled: return "Review message"
         case .idle, .answered: return session.isRealConnection ? "Tap to speak" : "Tap for demo text input"
         }
     }

@@ -22,6 +22,7 @@ struct AvatarPickerView: View {
             .tabViewStyle(.verticalPage)
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
+        .sensitiveContent(placeholder: "Avatars hidden")
         .navigationTitle("")
         .toolbarTitleDisplayMode(.inline)
         .onAppear { preview = selected }

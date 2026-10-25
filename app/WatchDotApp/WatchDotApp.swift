@@ -76,6 +76,9 @@ struct WatchDotApp: App {
     var body: some Scene {
         WindowGroup {
             ChatRootView(connection: connection, demo: session)
+                #if DEBUG && targetEnvironment(simulator)
+                .layoutPrivacyPreview(enabled: isLayoutPreview)
+                #endif
                 .onAppear {
                     if scenePhase == .active && !isLayoutPreview {
                         connection.enterForeground()
@@ -201,6 +204,7 @@ private struct ChatRootView: View {
                         }
                     }
                     .padding(.horizontal, 8)
+                    .sensitiveContent(placeholder: "Connection hidden")
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -275,13 +279,18 @@ private struct ChatHeader: View {
         .buttonStyle(.plain)
         .accessibilityLabel("\(name), connection details")
         .accessibilityValue(status)
+        .sensitiveContent(placeholder: "Dot")
     }
 }
 
 struct ConversationView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.isLuminanceReduced) private var luminanceReduced
+    @Environment(\.redactionReasons) private var redactionReasons
     @ObservedObject var session: ConversationSession
     @State private var bottomPosition = CGFloat.greatestFiniteMagnitude
+    @State private var scrollPolicy = HistoryScrollPolicy()
+    @State private var scrollRequest = UUID()
     @State private var refreshGestureState = MessageRefreshGestureState()
     @FocusState private var inputFocused: Bool
     var focusInputOnAppear = false
@@ -299,8 +308,8 @@ struct ConversationView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             if session.messages.isEmpty {
                                 Text(session.isRealConnection
-                                     ? "Room verified. Send your Dot a message; the first reply confirms the full connection."
-                                     : "Local demo, not connected to your Dot. Tap ⓘ to connect.")
+                                     ? "Your conversation starts here."
+                                     : "This demo stays on your watch. Connect from Settings to message your Dot.")
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
                             ForEach(session.messages) { message in
@@ -310,25 +319,36 @@ struct ConversationView: View {
                             statusView
                             if let issue = session.storageIssue {
                                 Text(issue).font(.caption2).foregroundStyle(.red)
-                                Button("Save again", action: session.retrySaving).font(.caption2)
+                                if session.canRetrySaving {
+                                    Button("Save again", action: session.retrySaving).font(.caption2)
+                                }
                             }
                             Color.clear.frame(height: 1).id("latest")
-                                .background(GeometryReader { geometry in
-                                    Color.clear.preference(key: ChatBottomPosition.self,
-                                        value: geometry.frame(in: .named("chat-scroll")).maxY)
-                                })
                         }
                         .frame(minHeight: viewport.size.height, alignment: .bottom)
+                        .background(GeometryReader { geometry in
+                            Color.clear.preference(key: ChatHistoryLayout.self,
+                                value: HistoryScrollLayout(revision: contentRevision,
+                                    contentHeight: geometry.size.height, viewportHeight: viewport.size.height,
+                                    bottom: geometry.frame(in: .named("chat-scroll")).maxY))
+                        })
                     }
                     .coordinateSpace(name: "chat-scroll")
-                    .onPreferenceChange(ChatBottomPosition.self) { bottomPosition = $0 }
+                    .onPreferenceChange(ChatHistoryLayout.self) { layout in
+                        guard let layout, layout.revision == contentRevision else { return }
+                        bottomPosition = layout.bottom
+                        let shouldFollow = scrollPolicy.shouldFollow(layout)
+                        scrollPolicy = scrollPolicy.observing(layout)
+                        if shouldFollow && isContentVisible { scrollToLatest(proxy) }
+                    }
                     .modifier(ChatRefreshObservation(session: session, gestureState: $refreshGestureState,
                         bottomPosition: bottomPosition, viewportHeight: viewport.size.height,
+                        interactionChanged: { scrollPolicy = scrollPolicy.interacting($0) },
                         legacyGesture: refreshGesture(atBottom: bottomPosition <= viewport.size.height + 2)))
                     .overlay(alignment: .bottom) {
                         if session.isRealConnection && (refreshGestureState.pullDistance > 0 || refreshGestureState.isArmed || session.isSynchronizing) {
                             Group {
-                                if session.isSynchronizing { ChatRefreshSpinner() }
+                                if session.isSynchronizing { ProgressView().controlSize(.mini) }
                                 else {
                                     Image(systemName: "arrow.clockwise")
                                         .rotationEffect(.degrees(min(refreshGestureState.pullDistance / refreshThreshold, 1) * 180))
@@ -343,13 +363,20 @@ struct ConversationView: View {
                         }
                     }
                     .accessibilityAction(named: Text("Sync messages")) { session.refreshFromGesture() }
-                    .onChange(of: session.deliveryState) { _, _ in
-                        withAnimation { proxy.scrollTo("latest", anchor: .bottom) }
+                    .overlay(alignment: .bottom) {
+                        if !scrollPolicy.followsLatest {
+                            Button("Latest", systemImage: "arrow.down", action: jumpToLatest)
+                                .font(.footnote)
+                                .buttonStyle(.borderedProminent)
+                                .fixedSize()
+                                .accessibilityLabel("Latest messages")
+                                .accessibilityIdentifier("history.latest")
+                        }
                     }
-                    .onChange(of: session.messages) { _, _ in
-                        withAnimation { proxy.scrollTo("latest", anchor: .bottom) }
+                    .onChange(of: scrollRequest) { _, _ in scrollToLatest(proxy) }
+                    .onChange(of: isContentVisible) { _, visible in
+                        if visible && scrollPolicy.followsLatest { scrollToLatest(proxy) }
                     }
-                    .onAppear { proxy.scrollTo("latest", anchor: .bottom) }
                 }
             }
 
@@ -374,13 +401,50 @@ struct ConversationView: View {
         }
         .padding(.horizontal, 8)
         .ignoresSafeArea(.container, edges: .bottom)
-        .onChange(of: scenePhase) { _, phase in
-            if phase != .active { refreshGestureState.cancel() }
+        .sensitiveContent(placeholder: "History hidden")
+        .onChange(of: isContentVisible) { _, visible in
+            if !visible {
+                inputFocused = false
+                refreshGestureState.cancel()
+                scrollPolicy = scrollPolicy.interacting(false)
+            }
         }
-        .onAppear { inputFocused = focusInputOnAppear }
+        .onAppear { inputFocused = focusInputOnAppear && isContentVisible }
         .task(id: session.conversationID) {
             if scenePhase == .active, !session.isRealConnection { session.resumeAutomatically() }
         }
+    }
+
+    private var isContentVisible: Bool {
+        SensitiveContentPolicy.isVisible(isActive: scenePhase == .active,
+            luminanceReduced: luminanceReduced, privacyRedacted: redactionReasons.contains(.privacy))
+    }
+
+    private var contentRevision: Int {
+        var revision = Hasher()
+        for message in session.messages {
+            revision.combine(message.id)
+            revision.combine(message.text)
+        }
+        revision.combine(String(describing: session.deliveryState))
+        revision.combine(session.storageIssue)
+        revision.combine(session.synchronizationIssue)
+        revision.combine(session.isSynchronizing)
+        revision.combine(session.pendingMessageIDs)
+        return revision.finalize()
+    }
+
+    private func scrollToLatest(_ proxy: ScrollViewProxy) {
+        guard isContentVisible else { return }
+        // Immediate following avoids moving text beneath a reader or VoiceOver focus.
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { proxy.scrollTo("latest", anchor: .bottom) }
+    }
+
+    private func jumpToLatest() {
+        scrollPolicy = scrollPolicy.jumpingToLatest()
+        scrollRequest = UUID()
     }
 
     @ViewBuilder
@@ -443,6 +507,7 @@ struct ConversationView: View {
     private func refreshGesture(atBottom: Bool) -> some Gesture {
         DragGesture(minimumDistance: 8)
             .onChanged { value in
+                scrollPolicy = scrollPolicy.interacting(true)
                 if !refreshGestureState.isTracking {
                     refreshGestureState.begin(enabled: atBottom && session.isRealConnection && !session.isSynchronizing,
                                               threshold: refreshThreshold)
@@ -451,17 +516,22 @@ struct ConversationView: View {
                 refreshGestureState.update(distance: -value.translation.height)
             }
             .onEnded { _ in
+                scrollPolicy = scrollPolicy.interacting(false)
                 if refreshGestureState.release() { session.refreshFromGesture() }
             }
     }
 
-    private func send() { session.send(session.draft) }
+    private func send() {
+        if session.send(session.draft) { jumpToLatest() }
+    }
 
 }
 
-private struct ChatBottomPosition: PreferenceKey {
-    static let defaultValue = CGFloat.greatestFiniteMagnitude
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+private struct ChatHistoryLayout: PreferenceKey {
+    static let defaultValue: HistoryScrollLayout? = nil
+    static func reduce(value: inout HistoryScrollLayout?, nextValue: () -> HistoryScrollLayout?) {
+        value = nextValue() ?? value
+    }
 }
 
 /// Observe native scrolling without installing a competing pan recognizer on watchOS 11+.
@@ -470,6 +540,7 @@ private struct ChatRefreshObservation<LegacyGesture: Gesture>: ViewModifier {
     @Binding var gestureState: MessageRefreshGestureState
     let bottomPosition: CGFloat
     let viewportHeight: CGFloat
+    let interactionChanged: (Bool) -> Void
     let legacyGesture: LegacyGesture
     @State private var interacting = false
 
@@ -479,6 +550,7 @@ private struct ChatRefreshObservation<LegacyGesture: Gesture>: ViewModifier {
             content
                 .scrollBounceBehavior(.always, axes: .vertical)
                 .onScrollPhaseChange { oldPhase, phase, context in
+                    interactionChanged(phase != .idle && phase != .animating)
                     if phase == .tracking || phase == .interacting {
                         if !gestureState.isTracking {
                             gestureState.begin(enabled: session.isRealConnection && !session.isSynchronizing)
@@ -507,7 +579,7 @@ private struct ChatRefreshObservation<LegacyGesture: Gesture>: ViewModifier {
                 .onChange(of: session.isSynchronizing) { _, refreshing in
                     if refreshing { gestureState.cancel() }
                 }
-                .onDisappear { gestureState.cancel() }
+                .onDisappear { gestureState.cancel(); interactionChanged(false) }
         } else {
             content.simultaneousGesture(legacyGesture)
         }
@@ -522,18 +594,6 @@ private struct ChatRefreshObservation<LegacyGesture: Gesture>: ViewModifier {
     }
 }
 
-private struct ChatRefreshSpinner: View {
-    @State private var rotating = false
-
-    var body: some View {
-        Image(systemName: "arrow.clockwise")
-            .foregroundStyle(.blue)
-            .rotationEffect(.degrees(rotating ? 360 : 0))
-            .animation(.linear(duration: 0.8).repeatForever(autoreverses: false), value: rotating)
-            .onAppear { rotating = true }
-    }
-}
-
 private struct ConnectionView: View {
     @ObservedObject var connection: ConnectionSession
     @ObservedObject var session: ConversationSession
@@ -544,7 +604,8 @@ private struct ConnectionView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 Text(connection.phase.title).font(.headline)
-                Text("Watch Dot D7 · \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "")").font(.caption2).foregroundStyle(.secondary)
+                Text("Watch Dot · Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""))")
+                    .font(.caption2).foregroundStyle(.secondary)
                 if let account = connection.accountLabel { Text(account) }
                 if case .failed(let reason) = connection.phase {
                     Text(reason).foregroundStyle(.orange)
@@ -564,7 +625,7 @@ private struct ConnectionView: View {
                     }
                 }
                 Text(connection.phase == .signedIn
-                     ? "A green dot means the account is authorized. Direct chat is still experimental."
+                     ? "Your account is connected. Direct chat is experimental."
                      : "Authorize your account from Watch Dot on your iPhone. The chat with your Dot runs on the watch.")
                     .foregroundStyle(.secondary)
 
@@ -587,39 +648,39 @@ private struct ConnectionView: View {
                     ForEach(ChatHistorySettings.limits, id: \.self) { Text("\($0)").tag($0) }
                 }
                 .onChange(of: historyLimit) { _, value in ChatHistorySettings.limit = value }
-                Text("Checks while waiting for your reply and once more after a minute. Opening the app only shows what's saved. At the end of the chat, swipe up until the icon changes color, then release to sync. watchOS may delay delivery.")
+                Text("Replies sync while you wait. To check again, pull up at the end of History. Delivery may be delayed when your wrist is down.")
                     .font(.caption2).foregroundStyle(.secondary)
-                Button("Back to chat") { dismiss() }
+                Button("Back to avatar") { dismiss() }
             }
             .font(.footnote)
             .padding(.horizontal, 8)
         }
+        .sensitiveContent(placeholder: "Account details hidden")
         .onAppear { connection.refresh() }
     }
 
     private var dotAccessProbe: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Direct chat · experimental D4").font(.caption2).foregroundStyle(.secondary)
+            Text("Connection").font(.headline)
             if connection.dotProbeState == .checking {
                 ProgressView("Checking OpenAI…")
                 Button("Cancel check", action: connection.cancelDotProbe)
             } else {
-                Button("Test access to your Dot", action: connection.probeDotAccess)
+                Button("Check connection", action: connection.probeDotAccess)
             }
             switch connection.dotProbeState {
             case .idle:
-                Text("Looks up your primary Dot and its room. Read-only, directly from the watch.")
+                Text("Check that your watch can reach your Dot.")
             case .checking:
                 EmptyView()
             case .cancelled:
                 Text("Check canceled. You can run it again.")
             case .located(let dot):
-                Text("Primary Dot: \(dot.name ?? "no visible name"). Room and members verified.")
+                Text("Connected to \(dot.name ?? "your Dot").")
                 Text(session.isRealConnection
-                     ? (session.deliveryState == .answered ? "Send and reply with your Dot verified."
-                        : "Direct chat enabled. Go back to the chat and send a message to verify your Dot's reply.")
-                     : "Room verified. Preparing direct chat…")
-                    .foregroundStyle(.orange)
+                     ? "Your Dot is available."
+                     : "Preparing your conversation…")
+                    .foregroundStyle(.secondary)
             case .failed(let message):
                 Text(message).foregroundStyle(.orange)
             }

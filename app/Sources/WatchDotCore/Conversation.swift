@@ -208,6 +208,7 @@ public final class ConversationSession: ObservableObject {
     }
     public var canEditDraft: Bool { storageIssue == nil }
     public var canSend: Bool { pendingRequest == nil && storageIssue == nil }
+    public var canRetrySaving: Bool { storageIssue != nil && !loadFailed }
     public var canRetry: Bool {
         storageIssue == nil && !deliveryState.isActive &&
         ((!awaitingReplies.isEmpty && transport.supportsReadOnlyResume) ||
@@ -420,7 +421,10 @@ public final class ConversationSession: ObservableObject {
         }
     }
 
-    public func retrySaving() { _ = persist() }
+    public func retrySaving() {
+        guard canRetrySaving else { return }
+        _ = persist()
+    }
 
     private func beginSend() {
         guard let request = pendingRequest else { return }

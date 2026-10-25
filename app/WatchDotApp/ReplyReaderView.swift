@@ -3,37 +3,44 @@ import SwiftUI
 struct ReplyReaderView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.isLuminanceReduced) private var luminanceReduced
+    @Environment(\.redactionReasons) private var redactionReasons
     let replies: [ChatMessage]
-    let name: String
     let close: () -> Void
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if scenePhase == .active && !luminanceReduced {
-                        ForEach(replies) { reply in
-                            if reply.id != replies.first?.id { Divider() }
-                            Text(reply.text)
-                                .font(.body)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .accessibilityIdentifier("reply.text")
-                        }
-                    } else {
-                        Text("Reply hidden").foregroundStyle(.secondary)
+                    ForEach(replies) { reply in
+                        if reply.id != replies.first?.id { Divider() }
+                        Text(reply.text)
+                            .font(.body)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("reply.text")
                     }
                     Button("Done", action: close)
                         .accessibilityIdentifier("reply.done")
                 }
                 .padding(.horizontal, 8)
+                .sensitiveContent(placeholder: nil)
             }
-            .navigationTitle(name)
+            .overlay {
+                if !isContentVisible {
+                    Text("Reply hidden")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .unredacted()
+                        .allowsHitTesting(false)
+                }
+            }
+            .navigationTitle("Reply")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button(action: close) {
                         Image(systemName: "arrow.uturn.backward")
                     }
+                    .disabled(!isContentVisible)
                     .accessibilityLabel("Back to avatar")
                     .accessibilityIdentifier("reply.close")
                 }
@@ -41,6 +48,11 @@ struct ReplyReaderView: View {
         }
         .background(.black)
         .accessibilityIdentifier("reply.reader")
+    }
+
+    private var isContentVisible: Bool {
+        SensitiveContentPolicy.isVisible(isActive: scenePhase == .active,
+            luminanceReduced: luminanceReduced, privacyRedacted: redactionReasons.contains(.privacy))
     }
 }
 
