@@ -75,7 +75,7 @@ xcodebuild -project app/WatchDot.xcodeproj -scheme WatchDot -destination 'generi
 1. Open the app on the Watch and the iPhone.
 2. Tap **Continue with ChatGPT** on either device and finish signing in on the iPhone. Enter your
    password only on OpenAI's own page.
-3. The Watch shows a green dot once it has authorized, then finds your Dot.
+3. Once the Watch has authorized and connected to your Dot, the home screen shows your avatar.
 
 ## 6. Use it
 
