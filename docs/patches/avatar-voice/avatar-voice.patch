@@ -1942,11 +1942,10 @@
 +}
 --- /dev/null
 +++ b/WatchDotApp/Assets.xcassets/AvatarAtlas.imageset/Contents.json
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,11 @@
 +{
 +  "images": [
 +    {
-+      "filename": "AvatarAtlas.png",
 +      "idiom": "universal"
 +    }
 +  ],

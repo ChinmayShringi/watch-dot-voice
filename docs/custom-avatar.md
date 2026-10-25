@@ -28,10 +28,14 @@ The authoritative values are in `app/Sources/WatchDotCore/AvatarAnimation.swift`
 ## Adding your own
 
 1. Use artwork you have the right to use. Don't commit artwork you may not redistribute.
-2. Put the PNG at the path above. The imageset's `Contents.json` already names it.
+2. Put the PNG at the path above, then assign it to the imageset. Either open
+   `app/WatchDotApp/Assets.xcassets` in Xcode, select **AvatarAtlas** and drag the PNG onto its
+   empty slot, or add `"filename": "AvatarAtlas.png"` to the single entry in `images` in the
+   imageset's `Contents.json`. The public imageset names no file, so a build without art has no
+   missing-image warning.
 3. Build. The sprite now appears in **Options > Change Avatar**.
 
-The exact PNG path above is git-ignored, so it stays local. The provenance checker still reports it
-as an extra file, which is expected for a local build. If you fork the project with your own
-redistributable art, remove the ignore rule and record the art as a feature asset with
-`docs/scripts/record_feature.py`.
+The exact PNG path above is git-ignored, so it stays local. The provenance checker still reports the
+PNG as an extra file and the edited `Contents.json` as a difference, which is expected for a local
+build. If you fork the project with your own redistributable art, remove the ignore rule and record
+the art as a feature asset with `docs/scripts/record_feature.py`.
