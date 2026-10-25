@@ -1,0 +1,8 @@
+// Copy to docs/config/WatchDot.local.xcconfig (git-ignored) and replace both placeholders.
+// The checker rejects these placeholder values on purpose.
+
+// A reverse-DNS prefix you control, for example com.yourname.watchdot.
+WATCHDOT_BUNDLE_PREFIX = com.REPLACE-ME.watchdot
+
+// Your Apple team ID (10 characters), shown in Xcode > Settings > Accounts.
+DEVELOPMENT_TEAM = REPLACE_WITH_TEAM_ID

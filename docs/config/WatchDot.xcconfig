@@ -1,0 +1,13 @@
+// Project-level base configuration for app/WatchDot.xcodeproj.
+// Committed defaults are placeholders only: never put a real team ID in this file.
+// For device builds, copy WatchDot.local.xcconfig.example to WatchDot.local.xcconfig
+// (git-ignored) in this folder and fill in your own values.
+
+// Phone app ID. The watch app is $(WATCHDOT_BUNDLE_PREFIX).watchkitapp and the
+// complication is $(WATCHDOT_BUNDLE_PREFIX).watchkitapp.launcher.
+WATCHDOT_BUNDLE_PREFIX = com.example.watchdot
+
+// Empty on purpose: supports unsigned simulator checks only.
+DEVELOPMENT_TEAM =
+
+#include? "WatchDot.local.xcconfig"

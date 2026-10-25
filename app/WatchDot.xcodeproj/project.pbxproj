@@ -59,6 +59,7 @@
 		D00000000000000000000006 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneOAuthBrowser.swift; sourceTree = "<group>"; };
 		D00000000000000000000009 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WatchDotPhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D0000000000000000000000A = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		E00000000000000000000001 /* WatchDot.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = WatchDot.xcconfig; path = ../docs/config/WatchDot.xcconfig; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -82,6 +83,7 @@
 				C00000000000000000000008 /* WatchDotComplication */,
 				A0000000000000000000000F /* Sources/WatchDotCore */,
 				A00000000000000000000005 /* Products */,
+				E00000000000000000000001 /* WatchDot.xcconfig */,
 			);
 			sourceTree = "<group>";
 		};
@@ -245,18 +247,17 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;
-				DEVELOPMENT_TEAM = 85ZLZTQP82;
                 CURRENT_PROJECT_VERSION = 4;
                 MARKETING_VERSION = 1.1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = WatchDotApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Watch Dot";
 				INFOPLIST_KEY_WKApplication = YES;
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = cl.australapps.watchdot;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "$(WATCHDOT_BUNDLE_PREFIX)";
                 INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = NO;
                 SKIP_INSTALL = YES;
                 CODE_SIGN_STYLE = Automatic;
-				PRODUCT_BUNDLE_IDENTIFIER = cl.australapps.watchdot.watchkitapp;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(WATCHDOT_BUNDLE_PREFIX).watchkitapp";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
 				SUPPORTED_PLATFORMS = "watchos watchsimulator";
@@ -271,18 +272,17 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;
-				DEVELOPMENT_TEAM = 85ZLZTQP82;
                 CURRENT_PROJECT_VERSION = 4;
                 MARKETING_VERSION = 1.1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = WatchDotApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Watch Dot";
 				INFOPLIST_KEY_WKApplication = YES;
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = cl.australapps.watchdot;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "$(WATCHDOT_BUNDLE_PREFIX)";
                 INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = NO;
                 SKIP_INSTALL = YES;
                 CODE_SIGN_STYLE = Automatic;
-				PRODUCT_BUNDLE_IDENTIFIER = cl.australapps.watchdot.watchkitapp;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(WATCHDOT_BUNDLE_PREFIX).watchkitapp";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
 				SUPPORTED_PLATFORMS = "watchos watchsimulator";
@@ -294,6 +294,7 @@
 		};
 		A00000000000000000000018 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = E00000000000000000000001 /* WatchDot.xcconfig */;
 			buildSettings = {
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
@@ -302,6 +303,7 @@
 		};
 		A00000000000000000000019 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = E00000000000000000000001 /* WatchDot.xcconfig */;
 			buildSettings = {
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
@@ -310,13 +312,12 @@
 		};
 		C00000000000000000000011 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES;
                 CODE_SIGN_STYLE = Automatic;
-                DEVELOPMENT_TEAM = 85ZLZTQP82;
                 CURRENT_PROJECT_VERSION = 4;
                 MARKETING_VERSION = 1.1;
                 GENERATE_INFOPLIST_FILE = YES;
                 INFOPLIST_FILE = WatchDotComplication/Info.plist;
                 INFOPLIST_KEY_CFBundleDisplayName = "Watch Dot";
-                PRODUCT_BUNDLE_IDENTIFIER = cl.australapps.watchdot.watchkitapp.launcher85zlztqp82;
+                PRODUCT_BUNDLE_IDENTIFIER = "$(WATCHDOT_BUNDLE_PREFIX).watchkitapp.launcher";
                 PRODUCT_NAME = "$(TARGET_NAME)";
                 SDKROOT = watchos;
                 SKIP_INSTALL = YES;
@@ -326,13 +327,12 @@
                 WATCHOS_DEPLOYMENT_TARGET = 10.0;}; name = Debug; };
 		C00000000000000000000012 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES;
                 CODE_SIGN_STYLE = Automatic;
-                DEVELOPMENT_TEAM = 85ZLZTQP82;
                 CURRENT_PROJECT_VERSION = 4;
                 MARKETING_VERSION = 1.1;
                 GENERATE_INFOPLIST_FILE = YES;
                 INFOPLIST_FILE = WatchDotComplication/Info.plist;
                 INFOPLIST_KEY_CFBundleDisplayName = "Watch Dot";
-                PRODUCT_BUNDLE_IDENTIFIER = cl.australapps.watchdot.watchkitapp.launcher85zlztqp82;
+                PRODUCT_BUNDLE_IDENTIFIER = "$(WATCHDOT_BUNDLE_PREFIX).watchkitapp.launcher";
                 PRODUCT_NAME = "$(TARGET_NAME)";
                 SDKROOT = watchos;
                 SKIP_INSTALL = YES;
@@ -343,7 +343,6 @@
         D00000000000000000000014 = {isa = XCBuildConfiguration; buildSettings = {
             ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
             CODE_SIGN_STYLE = Automatic;
-            DEVELOPMENT_TEAM = 85ZLZTQP82;
             CURRENT_PROJECT_VERSION = 4;
             MARKETING_VERSION = 1.1;
             GENERATE_INFOPLIST_FILE = YES;
@@ -351,7 +350,7 @@
             INFOPLIST_KEY_UILaunchScreen_Generation = YES;
             INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
             IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-            PRODUCT_BUNDLE_IDENTIFIER = cl.australapps.watchdot;
+            PRODUCT_BUNDLE_IDENTIFIER = "$(WATCHDOT_BUNDLE_PREFIX)";
             PRODUCT_NAME = "$(TARGET_NAME)";
             SDKROOT = iphoneos;
             SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -361,7 +360,6 @@
         D00000000000000000000015 = {isa = XCBuildConfiguration; buildSettings = {
             ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
             CODE_SIGN_STYLE = Automatic;
-            DEVELOPMENT_TEAM = 85ZLZTQP82;
             CURRENT_PROJECT_VERSION = 4;
             MARKETING_VERSION = 1.1;
             GENERATE_INFOPLIST_FILE = YES;
@@ -369,7 +367,7 @@
             INFOPLIST_KEY_UILaunchScreen_Generation = YES;
             INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
             IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-            PRODUCT_BUNDLE_IDENTIFIER = cl.australapps.watchdot;
+            PRODUCT_BUNDLE_IDENTIFIER = "$(WATCHDOT_BUNDLE_PREFIX)";
             PRODUCT_NAME = "$(TARGET_NAME)";
             SDKROOT = iphoneos;
             SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

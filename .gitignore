@@ -1,0 +1,18 @@
+# Local signing override: holds the user's own team ID and bundle prefix.
+docs/config/WatchDot.local.xcconfig
+
+# Xcode and SwiftPM build state
+.build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+.swiftpm/
+
+.DS_Store
+
+# Python caches from the checker and its tests
+__pycache__/
+*.py[cod]
+
+# Pristine upstream clone used by the checker; re-create with the command in docs/app-provenance.md
+docs/prototype/watch-dot/
