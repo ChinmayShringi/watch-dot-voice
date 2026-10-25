@@ -62,7 +62,8 @@ class CheckAppTests(unittest.TestCase):
         self.assert_fails(f"modified upstream file: app/{rel}")
 
     def test_edit_beyond_manifest_in_translated_file_fails(self):
-        self.edit("app/WatchDotApp/WatchDotApp.swift", '"Back to chat"', '"Back to the chat"')
+        # A code line, not UI copy, so copy changes in later feature patches don't break the test.
+        self.edit("app/WatchDotApp/WatchDotApp.swift", "import WidgetKit", "import WidgetKit // edit")
         self.assert_fails("modified upstream file: app/WatchDotApp/WatchDotApp.swift")
 
     def rewrite_manifest(self, change):
