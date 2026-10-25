@@ -19,3 +19,27 @@ The authentication implementation was informed by the public OAuth protocol
 used by OpenAI Codex (https://github.com/openai/codex), licensed under Apache-2.0.
 This attribution identifies a protocol reference; it does not assert that
 OpenAI authored or endorses Watch Dot.
+
+----
+Local modifications (watch-dot-voice)
+
+This copy is derived from https://github.com/Torcata/watch-dot at commit
+0ca53cc050017533e5ed8aef0436fc32e20f2ba1. Changes:
+- WatchDot.xcodeproj/project.pbxproj: signing team removed; bundle identifiers derived
+  from WATCHDOT_BUNDLE_PREFIX in ../docs/config/WatchDot.xcconfig.
+- User-facing text translated from Spanish to English, in 11 source files and 3 test
+  files, as exact literal replacements listed in
+  ../docs/translation/en-replacements.json. The timestamp month locale changed from
+  es_ES to en_US_POSIX, covered by an added test. Authentication, transport, storage
+  and protocol identifiers are unchanged.
+- An avatar-first Watch home screen with voice input (the upstream text chat moves
+  into an Options menu), recorded as one reviewed patch in
+  ../docs/patches/avatar-voice/avatar-voice.patch and pinned by SHA256 in
+  ../docs/patches/avatar-voice.json. Tapping the avatar records audio, which is sent
+  with the existing ChatGPT sign-in to ChatGPT's dictation endpoint, and the
+  transcript is sent through the existing message path. Includes a microphone
+  usage description and a build number bump. No sprite artwork is included; see
+  ../docs/custom-avatar.md.
+- This NOTICE.
+All other files are byte-identical to that commit. Distributed under the same
+GPL-3.0-only license.
