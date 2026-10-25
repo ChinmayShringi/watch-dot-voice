@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_SHA: 0ca53cc050017533e5ed8aef0436fc32e20f2ba1
+  # The toolchain the project is developed and verified with.
+  XCODE_APP: /Applications/Xcode_27.1.app
+  XCODE_BUILD: 27A9275
+
+jobs:
+  provenance:
+    name: Provenance checker
+    runs-on: xcode-27
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Fetch pinned upstream
+        run: |
+          git clone --quiet https://github.com/Torcata/watch-dot docs/prototype/watch-dot
+          git -C docs/prototype/watch-dot checkout --quiet --detach "$UPSTREAM_SHA"
+      - name: Checker tests
+        run: python3 -I -m unittest discover -s docs/scripts -v
+      - name: Verify app/ against upstream and reviewed changes
+        run: python3 -I docs/scripts/check_app.py
+
+  core-tests:
+    name: WatchDotCore tests
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Select Xcode
+        run: |
+          sudo xcode-select --switch "$XCODE_APP"
+          xcodebuild -version | grep -q "Build version $XCODE_BUILD"
+          swift --version
+      - name: Test
+        run: swift test --package-path app
+
+  simulator-build:
+    name: ${{ matrix.name }} (unsigned)
+    runs-on: xcode-27
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Watch app, watchOS Simulator
+            scheme: WatchDot
+            destination: generic/platform=watchOS Simulator
+          - name: iPhone app, iOS Simulator
+            scheme: WatchDotPhone
+            destination: generic/platform=iOS Simulator
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Select Xcode
+        run: |
+          sudo xcode-select --switch "$XCODE_APP"
+          xcodebuild -version | grep -q "Build version $XCODE_BUILD"
+      - name: Build
+        env:
+          SCHEME: ${{ matrix.scheme }}
+          DESTINATION: ${{ matrix.destination }}
+        run: |
+          xcodebuild -project app/WatchDot.xcodeproj -scheme "$SCHEME" \
+            -destination "$DESTINATION" -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO build
