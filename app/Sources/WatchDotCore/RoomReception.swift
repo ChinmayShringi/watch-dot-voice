@@ -5,6 +5,16 @@ public struct RoomMessage: Sendable, Equatable {
     public let message: ChatMessage
     public let requestID: UUID?
     public let replyTo: String?
+    public let serverCreatedAt: Date?
+
+    public init(remoteID: String, message: ChatMessage, requestID: UUID?, replyTo: String?,
+                serverCreatedAt: Date? = nil) {
+        self.remoteID = remoteID
+        self.message = message
+        self.requestID = requestID
+        self.replyTo = replyTo
+        self.serverCreatedAt = serverCreatedAt
+    }
 }
 
 struct RoomPage: Sendable {

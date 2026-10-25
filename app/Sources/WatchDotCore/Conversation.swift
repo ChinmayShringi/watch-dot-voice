@@ -188,6 +188,8 @@ public final class FileConversationStore: ConversationStore {
 public final class ConversationSession: ObservableObject {
     public static let backgroundReceptionPendingMessage = "Reply pending. It will sync when you return to the chat."
     @Published public private(set) var messages: [ChatMessage] = []
+    /// Live arrivals only, never persisted or populated by history synchronization.
+    @Published public private(set) var receivedReplies: [ChatMessage] = []
     @Published public private(set) var deliveryState: DeliveryState = .idle
     @Published public private(set) var showsCancellationNotice = false
     @Published public private(set) var storageIssue: String?
@@ -241,6 +243,7 @@ public final class ConversationSession: ObservableObject {
     private var outgoingMessageIDs: [UUID: UUID] = [:]
     private var syncTask: Task<Void, Never>?
     private var followUpTask: Task<Void, Never>?
+    private var followUpReply: (due: Date, message: ChatMessage)?
     private let now: () -> Date
     private let followUpDelay: TimeInterval
 
@@ -283,7 +286,7 @@ public final class ConversationSession: ObservableObject {
     }
 
     @discardableResult
-    public func send(_ text: String) -> Bool {
+    public func send(_ text: String, clearingDraft: Bool = true) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, canSend else { return false }
         readsPaused = false
@@ -291,7 +294,7 @@ public final class ConversationSession: ObservableObject {
         pendingRequest = TurnRequest(conversationID: conversationID, clientTurnID: UUID(), messages: messages)
         outgoingMessageIDs[pendingRequest!.clientTurnID] = messages.last!.id
         hasAttemptedDelivery = false
-        draft = ""
+        if clearingDraft { draft = "" }
         beginSend()
         return true
     }
@@ -487,8 +490,9 @@ public final class ConversationSession: ObservableObject {
             replyOperations[generation] = nil
             awaitingReplies.removeAll { $0.clientTurnID == operation.request.clientTurnID }
             // Multiple accepted inputs can observe the same later room message. Show it once.
-            if !messages.contains(where: { $0.id == answer.id }) { messages.append(answer) }
-            startFollowUp()
+            if !messages.contains(where: { $0.id == answer.id }) { messages = messages + [answer] }
+            recordReceivedReplies([answer])
+            startFollowUp(after: answer)
             if pendingRequest == nil { deliveryState = awaitingReplies.isEmpty ? .answered : .waiting }
             _ = persist()
             return
@@ -500,11 +504,12 @@ public final class ConversationSession: ObservableObject {
             return
         }
         invalidateAttempt()
-        messages.append(answer)
+        messages = messages + [answer]
+        recordReceivedReplies([answer])
         pendingRequest = nil
         hasAttemptedDelivery = false
         deliveryState = .answered
-        startFollowUp()
+        startFollowUp(after: answer)
         _ = persist()
     }
 
@@ -617,17 +622,32 @@ public final class ConversationSession: ObservableObject {
             followUpUntil: followUpUntil, outgoingMessageIDs: outgoingMessageIDs)
     }
 
-    private func startFollowUp() {
+    private func startFollowUp(after answer: ChatMessage) {
         guard transport.supportsHistorySync else { return }
         // This is the first answer of a requested turn. Extra room messages do not call here.
-        followUpUntil = now().addingTimeInterval(followUpDelay)
+        let due = now().addingTimeInterval(followUpDelay)
+        followUpUntil = due
+        followUpReply = (due, answer)
         followUpTask?.cancel(); followUpTask = nil
         resumeFollowUp()
+    }
+
+    private func recordReceivedReplies(_ replies: [ChatMessage]) {
+        let updated = replies.reduce(receivedReplies) { existing, reply in
+            guard reply.role == .assistant,
+                  !reply.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return existing }
+            if existing.contains(where: { $0.id == reply.id }) {
+                return existing.map { $0.id == reply.id ? reply : $0 }
+            }
+            return Array((existing + [reply]).suffix(32))
+        }
+        if updated != receivedReplies { receivedReplies = updated }
     }
 
     private func resumeFollowUp() {
         guard foreground, !readsPaused, transport.supportsHistorySync,
               let due = followUpUntil, followUpTask == nil else { return }
+        let baseline = followUpReply.flatMap { $0.due == due ? $0.message : nil }
         followUpTask = Task { [weak self, transport] in
             guard let delay = self.map({ max(0, due.timeIntervalSince($0.now())) }) else { return }
             do { try await Task.sleep(for: .seconds(delay)) } catch { return }
@@ -635,8 +655,23 @@ public final class ConversationSession: ObservableObject {
             do {
                 let page = try await transport.additionalMessages()
                 guard !Task.isCancelled, self.followUpUntil == due else { return }
-                self.messages = self.snapshot.merging(page, replaceWindow: false,
+                let previous = self.messages
+                let merged = self.snapshot.merging(page, replaceWindow: false,
                     limit: ChatHistorySettings.limit, at: self.now()).messages
+                self.messages = merged
+                self.recordReceivedReplies(merged.filter { reply in
+                    guard reply.role == .assistant else { return false }
+                    if let prior = previous.first(where: { $0.id == reply.id }) {
+                        return prior != reply && self.receivedReplies.contains { $0.id == reply.id }
+                    }
+                    // A recent page can contain older messages absent from the local cache.
+                    // Without a live anchor, or for tied timestamps, only merge into history.
+                    guard let baseline,
+                          let serverDate = page.first(where: { $0.message.id == reply.id })?.serverCreatedAt else {
+                        return false
+                    }
+                    return serverDate > baseline.createdAt
+                })
             } catch {
                 guard !Task.isCancelled, self.followUpUntil == due else { return }
                 self.synchronizationIssue = "Couldn't finish the extra refresh. Swipe up to sync."

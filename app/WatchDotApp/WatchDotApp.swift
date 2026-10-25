@@ -8,13 +8,22 @@ struct WatchDotApp: App {
     @StateObject private var session: ConversationSession
     @StateObject private var connection: ConnectionSession
 
+    private var isLayoutPreview: Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        ProcessInfo.processInfo.arguments.contains { ["--preview-chat", "--preview-reply", "--preview-refresh"].contains($0) }
+        #else
+        false
+        #endif
+    }
+
     init() {
         let directory = URL.applicationSupportDirectory.appendingPathComponent("WatchDot", isDirectory: true)
         // Demo and real account/room histories remain in different stores.
         var demoFile = "demo-conversation.json"
         #if DEBUG && targetEnvironment(simulator)
         let previewRefresh = ProcessInfo.processInfo.arguments.contains("--preview-refresh")
-        let previewChat = ProcessInfo.processInfo.arguments.contains("--preview-chat") || previewRefresh
+        let previewReply = ProcessInfo.processInfo.arguments.contains("--preview-reply")
+        let previewChat = ProcessInfo.processInfo.arguments.contains("--preview-chat") || previewRefresh || previewReply
         if previewChat { demoFile = "layout-preview.json" }
         #endif
         let store = FileConversationStore(url: directory.appendingPathComponent(demoFile))
@@ -31,14 +40,21 @@ struct WatchDotApp: App {
         }
         #endif
         #if DEBUG && targetEnvironment(simulator)
-        let transport: any ChatTransport = previewRefresh
-            ? RefreshPreviewTransport(messages: (try? store.load())?.messages ?? []) : DemoChatTransport()
+        let transport: any ChatTransport
+        if previewRefresh {
+            transport = RefreshPreviewTransport(messages: (try? store.load())?.messages ?? [])
+        } else if previewChat {
+            transport = AvatarPreviewTransport()
+        } else {
+            transport = DemoChatTransport()
+        }
         #else
         let transport: any ChatTransport = DemoChatTransport()
         #endif
         let session = ConversationSession(transport: transport, store: store)
         #if DEBUG && targetEnvironment(simulator)
         if previewRefresh { session.resumeAutomatically() }
+        if previewReply { session.send("Show a long sample reply.") }
         #endif
         _session = StateObject(wrappedValue: session)
         let bridge = CompanionConnectivity()
@@ -61,7 +77,7 @@ struct WatchDotApp: App {
         WindowGroup {
             ChatRootView(connection: connection, demo: session)
                 .onAppear {
-                    if scenePhase == .active {
+                    if scenePhase == .active && !isLayoutPreview {
                         connection.enterForeground()
                         refreshComplicationImageIfNeeded()
                     }
@@ -74,6 +90,7 @@ struct WatchDotApp: App {
                     if case .located = state { session.suspend() }
                 }
                 .onChange(of: scenePhase) { _, phase in
+                    guard !isLayoutPreview else { return }
                     if phase == .background {
                         session.suspend()
                         connection.enterBackground()
@@ -107,13 +124,28 @@ struct WatchDotApp: App {
     }
 
     private func connectChatIfReady() {
-        if scenePhase == .active, connection.phase == .signedIn, connection.dotProbeState == .idle {
+        if !isLayoutPreview, scenePhase == .active, connection.phase == .signedIn, connection.dotProbeState == .idle {
             connection.probeDotAccess()
         }
     }
 }
 
 #if DEBUG && targetEnvironment(simulator)
+private struct AvatarPreviewTransport: ChatTransport {
+    let displayName = "Companion"
+    let isRealConnection = false
+    let supportsIdempotentRetry = true
+
+    func send(_ request: TurnRequest, onAccepted: @escaping @Sendable () async -> Void) async throws -> ChatMessage {
+        if ProcessInfo.processInfo.arguments.contains("--preview-reply") {
+            await onAccepted()
+            try await Task.sleep(for: .seconds(2))
+            return ChatMessage(role: .assistant, text: "Here's your day at a glance.\n\nStart with one clear priority. Give it an uninterrupted block of time, then take a short break.\n\nKeep the next step small enough to begin now. Write down what you need, remove distractions, and check your progress after the first block.\n\nYou can turn the Digital Crown or swipe to read a longer reply. Your message stays in History after you return to the avatar.\n\nWhen you're ready, tap Done or the close button above.")
+        }
+        return try await DemoChatTransport().send(request, onAccepted: onAccepted)
+    }
+}
+
 /// An offline fixture for exercising pull, release and loading without a real account.
 private actor RefreshPreviewTransport: ChatTransport {
     let displayName = "Local preview"
@@ -147,7 +179,7 @@ private struct ChatRootView: View {
         NavigationStack {
             Group {
                 if let session = connection.selectedConversation(demo: demo) {
-                    ConversationView(session: session)
+                    selectedContent(session: session).id(session.conversationID)
                 } else {
                     VStack(spacing: 10) {
                         ScrollView {
@@ -173,10 +205,12 @@ private struct ChatRootView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    ChatHeader(name: connection.directConversation?.transportName ?? "Dot",
-                               color: connectionColor, status: connection.phase.title) {
-                        showConnection = true
+                if connection.selectedConversation(demo: demo) == nil {
+                    ToolbarItem(placement: .topBarLeading) {
+                        ChatHeader(name: connection.directConversation?.transportName ?? "Dot",
+                                   color: connectionColor, status: connection.phase.title) {
+                            showConnection = true
+                        }
                     }
                 }
             }
@@ -184,6 +218,24 @@ private struct ChatRootView: View {
         .sheet(isPresented: $showConnection) {
             ConnectionView(connection: connection, session: connection.selectedConversation(demo: demo) ?? demo)
         }
+    }
+
+    @ViewBuilder
+    private func selectedContent(session: ConversationSession) -> some View {
+        #if DEBUG && targetEnvironment(simulator)
+        if ProcessInfo.processInfo.arguments.contains("--preview-refresh") {
+            ConversationView(session: session)
+        } else {
+            avatarHome(session: session)
+        }
+        #else
+        avatarHome(session: session)
+        #endif
+    }
+
+    private func avatarHome(session: ConversationSession) -> some View {
+        AvatarConversationView(session: session, connection: connection,
+            isSettingsPresented: showConnection) { showConnection = true }
     }
 
     private var connectionColor: Color {
@@ -226,11 +278,13 @@ private struct ChatHeader: View {
     }
 }
 
-private struct ConversationView: View {
+struct ConversationView: View {
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var session: ConversationSession
     @State private var bottomPosition = CGFloat.greatestFiniteMagnitude
     @State private var refreshGestureState = MessageRefreshGestureState()
+    @FocusState private var inputFocused: Bool
+    var focusInputOnAppear = false
 
     var body: some View {
         VStack(spacing: 4) {
@@ -301,6 +355,7 @@ private struct ConversationView: View {
 
             HStack(spacing: 6) {
                 TextField("Message", text: $session.draft)
+                    .focused($inputFocused)
                     .font(.footnote)
                     .controlSize(.small)
                     .submitLabel(.done)
@@ -322,6 +377,7 @@ private struct ConversationView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { refreshGestureState.cancel() }
         }
+        .onAppear { inputFocused = focusInputOnAppear }
         .task(id: session.conversationID) {
             if scenePhase == .active, !session.isRealConnection { session.resumeAutomatically() }
         }

@@ -133,7 +133,7 @@ struct DotAccessProbe: Sendable {
         catch { throw DotProbeError.schema(stage) }
     }
 
-    private func routingIdentity(_ token: String, account: SignedInAccount, now: Date) throws -> (accountID: String, userID: String) {
+    func routingIdentity(_ token: String, account: SignedInAccount, now: Date) throws -> (accountID: String, userID: String) {
         // Decode only routing metadata from the OAuth response already stored by this app.
         // This is not signature validation; authentication still depends on the verified ID
         // token at sign-in and on the server accepting the bearer token for this exact route.

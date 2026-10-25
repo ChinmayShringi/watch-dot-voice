@@ -33,8 +33,10 @@ public final class ConnectionSession: ObservableObject {
     // Demo is opt-in for this app run. Missing/expired authentication never selects it.
     @Published public private(set) var demoEnabled = false
     @Published public private(set) var isRenewingSession = false
+    @Published public private(set) var voiceGeneration = UUID()
 
     public func selectDemo(_ enabled: Bool) {
+        if demoEnabled != enabled { voiceGeneration = UUID() }
         if enabled { directConversation?.suspend() }
         demoEnabled = enabled
     }
@@ -59,6 +61,7 @@ public final class ConnectionSession: ObservableObject {
     private var activeChatKey: String?
     private let chatDirectory: URL?
     private let http: any SignInHTTP
+    private let transcription: DotTranscription
     private let backgroundReceiver: (any BackgroundChatReceiving)?
     private var backgroundTransition: Task<Void, Never>?
     private var isForeground = true
@@ -91,10 +94,12 @@ public final class ConnectionSession: ObservableObject {
     public init(store: any SignInStore, http: any SignInHTTP = SecureSignInHTTP(),
                 now: @escaping () -> Date = Date.init,
                 chatDirectory: URL? = nil, backgroundReceiver: (any BackgroundChatReceiving)? = nil,
-                companion: (any WatchSignInLink)? = nil) {
+                companion: (any WatchSignInLink)? = nil,
+                transcriptionHTTP: any SignInHTTP = SecureSignInHTTP(requestTimeout: 60, resourceTimeout: 60)) {
         self.store = store
         self.companion = companion
         self.http = http
+        transcription = DotTranscription(http: transcriptionHTTP)
         self.chatDirectory = chatDirectory
         self.backgroundReceiver = backgroundReceiver
         service = SignInService(http: http)
@@ -166,6 +171,7 @@ public final class ConnectionSession: ObservableObject {
     }
 
     public func cancel() {
+        voiceGeneration = UUID()
         phoneValidationID = nil
         if let request = record.phoneRequest {
             do {
@@ -206,6 +212,7 @@ public final class ConnectionSession: ObservableObject {
         guard record.account == nil || record.account!.expiresAt <= now() || !canRenewSession else {
             throw SignInError.denied // A different account requires an explicit local sign-out.
         }
+        voiceGeneration = UUID()
         let request = try PhoneAuthorizationRequest(installationID: record.hostID,
             expectedSubject: record.account?.subject, now: now())
         var updated = record
@@ -326,6 +333,7 @@ public final class ConnectionSession: ObservableObject {
     }
 
     private func resetDotProbe() {
+        voiceGeneration = UUID()
         backgroundTransition?.cancel()
         if activeChatKey != nil, let backgroundReceiver { Task { await backgroundReceiver.stop() } }
         directConversation?.suspend()
@@ -337,6 +345,7 @@ public final class ConnectionSession: ObservableObject {
     }
 
     public func enterBackground() {
+        voiceGeneration = UUID()
         isForeground = false
         pause()
         directConversation?.suspend()
@@ -405,6 +414,38 @@ public final class ConnectionSession: ObservableObject {
         return account
     }
 
+    /// Capture the destination before microphone permission or any network suspension.
+    public func makeVoiceTurn() throws -> VoiceTurn {
+        guard isForeground, !demoEnabled, phase == .signedIn, let subject = record.account?.subject,
+              let key = activeChatKey, let conversation = directConversation, conversation.canSend,
+              case .located(let destination) = dotProbeState else { throw VoiceInputIssue.sessionChanged }
+        let generation = voiceGeneration
+        let valid: @MainActor () -> Bool = { [weak self, weak conversation] in
+            guard let self, let conversation,
+                  let stored = try? self.store.load()?.account else { return false }
+            return self.isForeground && !self.demoEnabled && self.voiceGeneration == generation &&
+                self.record.account?.subject == subject && stored.subject == subject &&
+                stored.accessToken == self.record.account?.accessToken && self.activeChatKey == key &&
+                self.directConversation === conversation && self.phase == .signedIn
+        }
+        return VoiceTurn(transcribe: { [weak self] clip in
+            guard let self, valid() else { throw VoiceInputIssue.sessionChanged }
+            let account: SignedInAccount
+            do { account = try await self.currentChatAccount(subject: subject, key: key) }
+            catch { throw VoiceInputIssue.sessionChanged }
+            try Task.checkCancellation()
+            guard valid() else { throw VoiceInputIssue.sessionChanged }
+            let text = try await self.transcription.transcribe(clip, account: account,
+                                                              destination: destination, now: self.now())
+            try Task.checkCancellation()
+            guard valid() else { throw VoiceInputIssue.sessionChanged }
+            return text
+        }, send: { [weak conversation] text in
+            guard valid(), let conversation, conversation.canSend else { return false }
+            return conversation.send(text, clearingDraft: false)
+        })
+    }
+
     /// One in-flight refresh shared by foreground sync, sends and reply reads. No periodic timer.
     func ensureCurrentAccount(force: Bool = false) async throws -> SignedInAccount {
         if let renewalTask { return try await renewalTask.value }
@@ -464,6 +505,7 @@ public final class ConnectionSession: ObservableObject {
                 if let reason = error as? SignInError {
                     switch reason {
                     case .refreshRejected, .identity:
+                        self.voiceGeneration = UUID()
                         let revoked = SignedInAccount(subject: account.subject, clientID: account.clientID,
                             email: account.email, expiresAt: .distantPast, idToken: account.idToken,
                             accessToken: nil, authorizationNonce: account.authorizationNonce)

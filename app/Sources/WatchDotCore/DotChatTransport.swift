@@ -132,7 +132,8 @@ struct DotChatTransport: ChatTransport {
                     role: item.account_user_id == destination.userID ? .user : .assistant,
                     text: text, createdAt: Self.remoteDate(item.created_at) ?? now()),
                 requestID: item.account_user_id == destination.userID ? UUID(uuidString: item.request_id ?? "") : nil,
-                replyTo: item.reply_to?.message_id ?? item.reply_root_message_id)
+                replyTo: item.reply_to?.message_id ?? item.reply_root_message_id,
+                serverCreatedAt: Self.remoteDate(item.created_at))
         }
     }
 

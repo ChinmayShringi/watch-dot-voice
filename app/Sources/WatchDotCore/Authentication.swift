@@ -148,10 +148,10 @@ private final class NoAuthRedirects: NSObject, URLSessionTaskDelegate, Sendable 
 
 public struct SecureSignInHTTP: SignInHTTP {
     private let session: URLSession
-    public init() {
+    public init(requestTimeout: TimeInterval = 15, resourceTimeout: TimeInterval = 25) {
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 15
-        config.timeoutIntervalForResource = 25
+        config.timeoutIntervalForRequest = requestTimeout
+        config.timeoutIntervalForResource = resourceTimeout
         config.httpCookieStorage = nil
         config.urlCache = nil
         session = URLSession(configuration: config, delegate: NoAuthRedirects(), delegateQueue: nil)
@@ -166,9 +166,17 @@ public struct SecureSignInHTTP: SignInHTTP {
     }
     private func perform(_ request: URLRequest) async throws -> SignInHTTPResponse {
         do {
-            let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse, data.count <= 256_000 else {
+            let (bytes, response) = try await session.bytes(for: request)
+            guard let http = response as? HTTPURLResponse else {
                 throw SignInError.invalidResponse
+            }
+            var data = Data()
+            for try await byte in bytes {
+                guard data.count < 256_000 else {
+                    bytes.task.cancel()
+                    throw SignInError.invalidResponse
+                }
+                data.append(byte)
             }
             return SignInHTTPResponse(data: data, status: http.statusCode,
                 contentType: SignInContentType(http.value(forHTTPHeaderField: "Content-Type")),
