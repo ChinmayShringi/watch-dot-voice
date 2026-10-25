@@ -30,19 +30,24 @@ checker that verifies every byte of the app against upstream plus the reviewed c
   "Tap to speak".
 - **Full-screen replies.** A new reply opens in a scrollable reader (use the Digital Crown) and
   closes only with **Done** or the back-to-avatar control, so scrolling can never dismiss it or
-  start a recording. Replies wait while you are recording, in a menu or in a sheet, and Always On
-  hides reply text.
+  start a recording. Replies wait while you are recording, in a menu or in a sheet.
 - **Choose an avatar.** Page through Pebble, Orbit and Pixel, plus an optional sprite you supply
   (see [docs/custom-avatar.md](docs/custom-avatar.md)). The choice is local and cosmetic; it never
   changes which Dot you talk to.
+- **Private at a glance.** Conversation text, drafts and account details are hidden in Always On,
+  while the app is inactive and under privacy redaction, for VoiceOver as well as on screen.
+- **Recover from the home screen.** If a message is pending or failed, tap the avatar or
+  **Review message** to resume, check for a reply or discard it. Nothing is resent
+  automatically.
 - **No API key.** It uses your ChatGPT subscription. There's no paid API and no relay server.
 - **Watch first.** After a one-time sign-in on the iPhone, the watch talks to the Dot directly.
 - **Careful with audio.** Recording stops at 60 seconds and happens only in the foreground.
   Near-silent recordings (below a simple loudness threshold, not speech detection) are rejected
   before upload. Each recording is deleted after use, and uploads are never retried
   automatically.
-- **Accessible.** VoiceOver labels are provided, and animation pauses for Reduce Motion, Always On
-  and inactive scenes.
+- **Accessible.** The avatar's VoiceOver label, hint and value follow the recording state.
+  Animation pauses for Reduce Motion, Always On and inactive scenes, and History scrolls without
+  animation. VoiceOver has not yet been checked on a physical Watch.
 
 ## Requirements
 

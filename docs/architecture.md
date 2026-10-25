@@ -47,8 +47,11 @@ the Dot directly over Wi-Fi or cellular.
 | `RoomReception.swift` | Paged message reception |
 | `Conversation.swift` | Conversation state, local snapshot store, demo transport |
 | `DotTranscription.swift` | Multipart upload to the dictation endpoint and strict response decoding |
-| `VoiceInputSession.swift` | Voice state machine: permission, recording, transcription, a single send, cancellation |
+| `VoiceInputSession.swift` | Voice state machine: permission, recording, transcription, a single send, cancellation, and scene policy (capture stops when inactive; transcription stops at background) |
 | `AvatarAnimation.swift` | Sprite rows, frame timings and motion policy |
+| `HomeInteraction.swift` | Home recovery choices (reason, Resume or Check for Reply, Discard, Save Again) and the avatar's state-dependent VoiceOver label, hint and value |
+| `SensitiveContentPolicy.swift` | When private content may show: active scene, full luminance, no privacy redaction |
+| `HistoryScrollPolicy.swift` | Whether History follows new messages: only at the end, never during a scroll, and after an explicit jump |
 | `AvatarPresentation.swift` | Which reply the reader shows. Only runtime arrivals open it, never history loading or replies already dismissed, and only when no recording, menu or sheet is active. |
 | `CompanionAppearance.swift` | Local avatar choice (sprite, Pebble, Orbit, Pixel), independent of the account and the Dot |
 
@@ -56,8 +59,9 @@ the Dot directly over Wi-Fi or cellular.
 
 | File | Responsibility |
 |---|---|
-| `AvatarConversationView.swift` | Home screen: avatar, status line, idle "Tap to speak", Options menu, reply queue |
-| `ReplyReaderView.swift` | Full-screen scrollable reply with Done and back-to-avatar; text hidden in Always On |
+| `AvatarConversationView.swift` | Home screen: avatar, status line, idle "Tap to speak", Options menu, recovery and voice error sheets, reply queue |
+| `ReplyReaderView.swift` | Full-screen scrollable reply with Done and back-to-avatar |
+| `SensitiveContent.swift` | The shared privacy shield: hides content, its accessibility and hit testing, and shows a placeholder |
 | `AvatarPickerView.swift` | Vertical paging picker with Choose and Selected |
 | `CompanionAvatar.swift`, `SpriteAvatar.swift` | Glyph avatars and the optional sprite, driven by the microphone level |
 | `WatchVoiceRecorder.swift` | AVAudioRecorder capture (AAC, mono), metering, file cleanup |
@@ -78,7 +82,7 @@ sequenceDiagram
     U->>V: tap again (or 60 s)
     V->>R: stop
     alt near-silent (below the loudness threshold)
-        V-->>U: "Didn't catch that" (nothing uploaded)
+        V-->>U: "No speech was detected" (nothing uploaded)
     else
         V->>T: POST /backend-api/transcribe (m4a)
         T-->>V: transcript
@@ -100,6 +104,13 @@ sequenceDiagram
   Dot is discarded.
 - **Fixed error messages:** users never see response bodies, tokens or account identifiers.
 - **Cosmetic avatar choice:** it is stored locally and never affects routing.
+- **Inactive is not background:** capture stops when the app becomes inactive (a dimmed screen
+  or a system overlay). A transcription already under way continues while the app is inactive and
+  is sent. Moving to the background cancels it with a message; signing out or changing Dot cancels
+  it and resets voice input. When watchOS moves an inactive app to the background after a
+  wrist-down has not been measured on hardware.
+- **Content is shielded:** conversation, draft and account text use one shared policy and are
+  hidden in Always On, while inactive and under privacy redaction.
 - **Replies never interrupt:** a reply never opens during a recording, a menu or a sheet, and
   closes only on an explicit action.
 

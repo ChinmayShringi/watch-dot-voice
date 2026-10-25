@@ -41,7 +41,13 @@ description.
 - Match the surrounding Swift. Prefer value types and immutable updates.
 - Handle every error explicitly and show users fixed, non-sensitive messages.
 - Keep files small and focused.
-- Accessibility is not optional: provide VoiceOver labels and respect Reduce Motion and Always On.
+- Accessibility is not optional: provide VoiceOver labels, hints and values that match the current
+  state, and respect Reduce Motion and Always On.
+- Wrap conversation, draft and account content in `.sensitiveContent()` so it is hidden in Always
+  On, while inactive and under privacy redaction. Apply it to the content itself (for example the
+  stack of text inside a `ScrollView`), never to a native container such as `NavigationStack`,
+  `ScrollView` or a sheet. For a full-screen placeholder, overlay it on the container using the same
+  visibility policy. Keep titles and toolbars the same while content is hidden.
 
 ## Pull requests
 

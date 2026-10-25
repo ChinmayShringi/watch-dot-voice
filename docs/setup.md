@@ -81,7 +81,12 @@ xcodebuild -project app/WatchDot.xcodeproj -scheme WatchDot -destination 'generi
 
 - **Talk.** The home screen is your avatar. Tap it to start recording and tap again to send; the
   first tap asks for microphone access. If you deny it, allow it later in the iPhone's Watch app,
-  under Privacy. Tap **Cancel** to discard a recording.
+  under Privacy. While recording, the status shows the elapsed time and "Tap to send". Tap
+  **Cancel** to discard a recording. If the app becomes inactive while you are recording, for
+  example when the screen dims after you lower your wrist, the recording stops and nothing is
+  sent. A recording you have already sent keeps transcribing while the app is inactive and is
+  sent; if the app moves to the background first, it is cancelled and you see a message. This
+  timing has not been tested on a physical Watch.
 - **Read replies.** A reply opens full screen. Scroll with the Digital Crown, then tap **Done** or
   the back-to-avatar control.
 - **Everything else.** Tap the **Options** button (top left):
@@ -94,6 +99,11 @@ xcodebuild -project app/WatchDot.xcodeproj -scheme WatchDot -destination 'generi
   | Settings | Account and connection |
 
   Options is unavailable while a voice message is being recorded, transcribed or sent.
+- **Recover a message.** If a message is pending or failed, the status says **Review message**.
+  Tap it or the avatar to resume, check for a reply or discard it. Nothing is resent
+  automatically.
+- **Privacy.** In Always On and whenever the app is inactive, conversation text, drafts and
+  account details are hidden.
 
 ## Troubleshooting
 
