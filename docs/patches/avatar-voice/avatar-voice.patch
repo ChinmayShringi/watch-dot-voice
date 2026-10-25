@@ -1,0 +1,2892 @@
+--- a/Sources/WatchDotCore/Authentication.swift
++++ b/Sources/WatchDotCore/Authentication.swift
+@@ -148,10 +148,10 @@
+ 
+ public struct SecureSignInHTTP: SignInHTTP {
+     private let session: URLSession
+-    public init() {
++    public init(requestTimeout: TimeInterval = 15, resourceTimeout: TimeInterval = 25) {
+         let config = URLSessionConfiguration.ephemeral
+-        config.timeoutIntervalForRequest = 15
+-        config.timeoutIntervalForResource = 25
++        config.timeoutIntervalForRequest = requestTimeout
++        config.timeoutIntervalForResource = resourceTimeout
+         config.httpCookieStorage = nil
+         config.urlCache = nil
+         session = URLSession(configuration: config, delegate: NoAuthRedirects(), delegateQueue: nil)
+@@ -166,9 +166,17 @@
+     }
+     private func perform(_ request: URLRequest) async throws -> SignInHTTPResponse {
+         do {
+-            let (data, response) = try await session.data(for: request)
+-            guard let http = response as? HTTPURLResponse, data.count <= 256_000 else {
++            let (bytes, response) = try await session.bytes(for: request)
++            guard let http = response as? HTTPURLResponse else {
+                 throw SignInError.invalidResponse
++            }
++            var data = Data()
++            for try await byte in bytes {
++                guard data.count < 256_000 else {
++                    bytes.task.cancel()
++                    throw SignInError.invalidResponse
++                }
++                data.append(byte)
+             }
+             return SignInHTTPResponse(data: data, status: http.statusCode,
+                 contentType: SignInContentType(http.value(forHTTPHeaderField: "Content-Type")),
+--- a/Sources/WatchDotCore/ConnectionSession.swift
++++ b/Sources/WatchDotCore/ConnectionSession.swift
+@@ -33,8 +33,10 @@
+     // Demo is opt-in for this app run. Missing/expired authentication never selects it.
+     @Published public private(set) var demoEnabled = false
+     @Published public private(set) var isRenewingSession = false
++    @Published public private(set) var voiceGeneration = UUID()
+ 
+     public func selectDemo(_ enabled: Bool) {
++        if demoEnabled != enabled { voiceGeneration = UUID() }
+         if enabled { directConversation?.suspend() }
+         demoEnabled = enabled
+     }
+@@ -59,6 +61,7 @@
+     private var activeChatKey: String?
+     private let chatDirectory: URL?
+     private let http: any SignInHTTP
++    private let transcription: DotTranscription
+     private let backgroundReceiver: (any BackgroundChatReceiving)?
+     private var backgroundTransition: Task<Void, Never>?
+     private var isForeground = true
+@@ -91,10 +94,12 @@
+     public init(store: any SignInStore, http: any SignInHTTP = SecureSignInHTTP(),
+                 now: @escaping () -> Date = Date.init,
+                 chatDirectory: URL? = nil, backgroundReceiver: (any BackgroundChatReceiving)? = nil,
+-                companion: (any WatchSignInLink)? = nil) {
++                companion: (any WatchSignInLink)? = nil,
++                transcriptionHTTP: any SignInHTTP = SecureSignInHTTP(requestTimeout: 60, resourceTimeout: 60)) {
+         self.store = store
+         self.companion = companion
+         self.http = http
++        transcription = DotTranscription(http: transcriptionHTTP)
+         self.chatDirectory = chatDirectory
+         self.backgroundReceiver = backgroundReceiver
+         service = SignInService(http: http)
+@@ -166,6 +171,7 @@
+     }
+ 
+     public func cancel() {
++        voiceGeneration = UUID()
+         phoneValidationID = nil
+         if let request = record.phoneRequest {
+             do {
+@@ -206,6 +212,7 @@
+         guard record.account == nil || record.account!.expiresAt <= now() || !canRenewSession else {
+             throw SignInError.denied // A different account requires an explicit local sign-out.
+         }
++        voiceGeneration = UUID()
+         let request = try PhoneAuthorizationRequest(installationID: record.hostID,
+             expectedSubject: record.account?.subject, now: now())
+         var updated = record
+@@ -326,6 +333,7 @@
+     }
+ 
+     private func resetDotProbe() {
++        voiceGeneration = UUID()
+         backgroundTransition?.cancel()
+         if activeChatKey != nil, let backgroundReceiver { Task { await backgroundReceiver.stop() } }
+         directConversation?.suspend()
+@@ -337,6 +345,7 @@
+     }
+ 
+     public func enterBackground() {
++        voiceGeneration = UUID()
+         isForeground = false
+         pause()
+         directConversation?.suspend()
+@@ -405,6 +414,38 @@
+         return account
+     }
+ 
++    /// Capture the destination before microphone permission or any network suspension.
++    public func makeVoiceTurn() throws -> VoiceTurn {
++        guard isForeground, !demoEnabled, phase == .signedIn, let subject = record.account?.subject,
++              let key = activeChatKey, let conversation = directConversation, conversation.canSend,
++              case .located(let destination) = dotProbeState else { throw VoiceInputIssue.sessionChanged }
++        let generation = voiceGeneration
++        let valid: @MainActor () -> Bool = { [weak self, weak conversation] in
++            guard let self, let conversation,
++                  let stored = try? self.store.load()?.account else { return false }
++            return self.isForeground && !self.demoEnabled && self.voiceGeneration == generation &&
++                self.record.account?.subject == subject && stored.subject == subject &&
++                stored.accessToken == self.record.account?.accessToken && self.activeChatKey == key &&
++                self.directConversation === conversation && self.phase == .signedIn
++        }
++        return VoiceTurn(transcribe: { [weak self] clip in
++            guard let self, valid() else { throw VoiceInputIssue.sessionChanged }
++            let account: SignedInAccount
++            do { account = try await self.currentChatAccount(subject: subject, key: key) }
++            catch { throw VoiceInputIssue.sessionChanged }
++            try Task.checkCancellation()
++            guard valid() else { throw VoiceInputIssue.sessionChanged }
++            let text = try await self.transcription.transcribe(clip, account: account,
++                                                              destination: destination, now: self.now())
++            try Task.checkCancellation()
++            guard valid() else { throw VoiceInputIssue.sessionChanged }
++            return text
++        }, send: { [weak conversation] text in
++            guard valid(), let conversation, conversation.canSend else { return false }
++            return conversation.send(text, clearingDraft: false)
++        })
++    }
++
+     /// One in-flight refresh shared by foreground sync, sends and reply reads. No periodic timer.
+     func ensureCurrentAccount(force: Bool = false) async throws -> SignedInAccount {
+         if let renewalTask { return try await renewalTask.value }
+@@ -464,6 +505,7 @@
+                 if let reason = error as? SignInError {
+                     switch reason {
+                     case .refreshRejected, .identity:
++                        self.voiceGeneration = UUID()
+                         let revoked = SignedInAccount(subject: account.subject, clientID: account.clientID,
+                             email: account.email, expiresAt: .distantPast, idToken: account.idToken,
+                             accessToken: nil, authorizationNonce: account.authorizationNonce)
+--- a/Sources/WatchDotCore/Conversation.swift
++++ b/Sources/WatchDotCore/Conversation.swift
+@@ -188,6 +188,8 @@
+ public final class ConversationSession: ObservableObject {
+     public static let backgroundReceptionPendingMessage = "Reply pending. It will sync when you return to the chat."
+     @Published public private(set) var messages: [ChatMessage] = []
++    /// Live arrivals only, never persisted or populated by history synchronization.
++    @Published public private(set) var receivedReplies: [ChatMessage] = []
+     @Published public private(set) var deliveryState: DeliveryState = .idle
+     @Published public private(set) var showsCancellationNotice = false
+     @Published public private(set) var storageIssue: String?
+@@ -241,6 +243,7 @@
+     private var outgoingMessageIDs: [UUID: UUID] = [:]
+     private var syncTask: Task<Void, Never>?
+     private var followUpTask: Task<Void, Never>?
++    private var followUpReply: (due: Date, message: ChatMessage)?
+     private let now: () -> Date
+     private let followUpDelay: TimeInterval
+ 
+@@ -283,7 +286,7 @@
+     }
+ 
+     @discardableResult
+-    public func send(_ text: String) -> Bool {
++    public func send(_ text: String, clearingDraft: Bool = true) -> Bool {
+         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+         guard !trimmed.isEmpty, canSend else { return false }
+         readsPaused = false
+@@ -291,7 +294,7 @@
+         pendingRequest = TurnRequest(conversationID: conversationID, clientTurnID: UUID(), messages: messages)
+         outgoingMessageIDs[pendingRequest!.clientTurnID] = messages.last!.id
+         hasAttemptedDelivery = false
+-        draft = ""
++        if clearingDraft { draft = "" }
+         beginSend()
+         return true
+     }
+@@ -487,8 +490,9 @@
+             replyOperations[generation] = nil
+             awaitingReplies.removeAll { $0.clientTurnID == operation.request.clientTurnID }
+             // Multiple accepted inputs can observe the same later room message. Show it once.
+-            if !messages.contains(where: { $0.id == answer.id }) { messages.append(answer) }
+-            startFollowUp()
++            if !messages.contains(where: { $0.id == answer.id }) { messages = messages + [answer] }
++            recordReceivedReplies([answer])
++            startFollowUp(after: answer)
+             if pendingRequest == nil { deliveryState = awaitingReplies.isEmpty ? .answered : .waiting }
+             _ = persist()
+             return
+@@ -500,11 +504,12 @@
+             return
+         }
+         invalidateAttempt()
+-        messages.append(answer)
++        messages = messages + [answer]
++        recordReceivedReplies([answer])
+         pendingRequest = nil
+         hasAttemptedDelivery = false
+         deliveryState = .answered
+-        startFollowUp()
++        startFollowUp(after: answer)
+         _ = persist()
+     }
+ 
+@@ -617,17 +622,32 @@
+             followUpUntil: followUpUntil, outgoingMessageIDs: outgoingMessageIDs)
+     }
+ 
+-    private func startFollowUp() {
++    private func startFollowUp(after answer: ChatMessage) {
+         guard transport.supportsHistorySync else { return }
+         // This is the first answer of a requested turn. Extra room messages do not call here.
+-        followUpUntil = now().addingTimeInterval(followUpDelay)
++        let due = now().addingTimeInterval(followUpDelay)
++        followUpUntil = due
++        followUpReply = (due, answer)
+         followUpTask?.cancel(); followUpTask = nil
+         resumeFollowUp()
++    }
++
++    private func recordReceivedReplies(_ replies: [ChatMessage]) {
++        let updated = replies.reduce(receivedReplies) { existing, reply in
++            guard reply.role == .assistant,
++                  !reply.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return existing }
++            if existing.contains(where: { $0.id == reply.id }) {
++                return existing.map { $0.id == reply.id ? reply : $0 }
++            }
++            return Array((existing + [reply]).suffix(32))
++        }
++        if updated != receivedReplies { receivedReplies = updated }
+     }
+ 
+     private func resumeFollowUp() {
+         guard foreground, !readsPaused, transport.supportsHistorySync,
+               let due = followUpUntil, followUpTask == nil else { return }
++        let baseline = followUpReply.flatMap { $0.due == due ? $0.message : nil }
+         followUpTask = Task { [weak self, transport] in
+             guard let delay = self.map({ max(0, due.timeIntervalSince($0.now())) }) else { return }
+             do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+@@ -635,8 +655,23 @@
+             do {
+                 let page = try await transport.additionalMessages()
+                 guard !Task.isCancelled, self.followUpUntil == due else { return }
+-                self.messages = self.snapshot.merging(page, replaceWindow: false,
++                let previous = self.messages
++                let merged = self.snapshot.merging(page, replaceWindow: false,
+                     limit: ChatHistorySettings.limit, at: self.now()).messages
++                self.messages = merged
++                self.recordReceivedReplies(merged.filter { reply in
++                    guard reply.role == .assistant else { return false }
++                    if let prior = previous.first(where: { $0.id == reply.id }) {
++                        return prior != reply && self.receivedReplies.contains { $0.id == reply.id }
++                    }
++                    // A recent page can contain older messages absent from the local cache.
++                    // Without a live anchor, or for tied timestamps, only merge into history.
++                    guard let baseline,
++                          let serverDate = page.first(where: { $0.message.id == reply.id })?.serverCreatedAt else {
++                        return false
++                    }
++                    return serverDate > baseline.createdAt
++                })
+             } catch {
+                 guard !Task.isCancelled, self.followUpUntil == due else { return }
+                 self.synchronizationIssue = "Couldn't finish the extra refresh. Swipe up to sync."
+--- a/Sources/WatchDotCore/DotAccessProbe.swift
++++ b/Sources/WatchDotCore/DotAccessProbe.swift
+@@ -133,7 +133,7 @@
+         catch { throw DotProbeError.schema(stage) }
+     }
+ 
+-    private func routingIdentity(_ token: String, account: SignedInAccount, now: Date) throws -> (accountID: String, userID: String) {
++    func routingIdentity(_ token: String, account: SignedInAccount, now: Date) throws -> (accountID: String, userID: String) {
+         // Decode only routing metadata from the OAuth response already stored by this app.
+         // This is not signature validation; authentication still depends on the verified ID
+         // token at sign-in and on the server accepting the bearer token for this exact route.
+--- a/Sources/WatchDotCore/DotChatTransport.swift
++++ b/Sources/WatchDotCore/DotChatTransport.swift
+@@ -132,7 +132,8 @@
+                     role: item.account_user_id == destination.userID ? .user : .assistant,
+                     text: text, createdAt: Self.remoteDate(item.created_at) ?? now()),
+                 requestID: item.account_user_id == destination.userID ? UUID(uuidString: item.request_id ?? "") : nil,
+-                replyTo: item.reply_to?.message_id ?? item.reply_root_message_id)
++                replyTo: item.reply_to?.message_id ?? item.reply_root_message_id,
++                serverCreatedAt: Self.remoteDate(item.created_at))
+         }
+     }
+ 
+--- a/Sources/WatchDotCore/RoomReception.swift
++++ b/Sources/WatchDotCore/RoomReception.swift
+@@ -5,6 +5,16 @@
+     public let message: ChatMessage
+     public let requestID: UUID?
+     public let replyTo: String?
++    public let serverCreatedAt: Date?
++
++    public init(remoteID: String, message: ChatMessage, requestID: UUID?, replyTo: String?,
++                serverCreatedAt: Date? = nil) {
++        self.remoteID = remoteID
++        self.message = message
++        self.requestID = requestID
++        self.replyTo = replyTo
++        self.serverCreatedAt = serverCreatedAt
++    }
+ }
+ 
+ struct RoomPage: Sendable {
+--- a/Tests/WatchDotCoreTests/RoomReceptionTests.swift
++++ b/Tests/WatchDotCoreTests/RoomReceptionTests.swift
+@@ -173,6 +173,12 @@
+         XCTAssertEqual(messages.first?.remoteID, "message-10")
+         XCTAssertEqual(messages.last?.remoteID, "message-59")
+         XCTAssertEqual(messages.first?.message.createdAt, ISO8601DateFormatter().date(from: "2026-10-02T20:00:00Z"))
++        XCTAssertEqual(messages.first?.serverCreatedAt, messages.first?.message.createdAt)
++        let undated = SignInHTTPResponse(data: Data(#"{"items":[{"id":"undated","account_user_id":"andy","content":{"text":"history without a date"}}]}"#.utf8), status: 200)
++        let undatedPage = try transport.receptionPage(undated)
++        XCTAssertEqual(undatedPage.messages.count, 1)
++        XCTAssertNil(undatedPage.messages.first?.serverCreatedAt)
++        XCTAssertEqual(undatedPage.messages.first?.message.createdAt, receptionNow)
+         let calls = await http.captured()
+         XCTAssertEqual(calls.filter { $0.url!.path.hasSuffix("messages") }.count, 3)
+         XCTAssertTrue(calls.allSatisfy { $0.httpMethod == "GET" })
+--- a/WatchDot.xcodeproj/project.pbxproj
++++ b/WatchDot.xcodeproj/project.pbxproj
+@@ -33,6 +33,17 @@
+ 		D0000000000000000000006F = {isa = PBXBuildFile; fileRef = B00000000000000000000003; };
+ 		D00000000000000000000070 = {isa = PBXBuildFile; fileRef = A0000000000000000000000A; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+ 		D00000000000000000000071 = {isa = PBXBuildFile; fileRef = D0000000000000000000000A; };
++		F20000000000000000000001 /* DotTranscription.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000001 /* DotTranscription.swift */; };
++		F20000000000000000000002 /* VoiceInputSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000002 /* VoiceInputSession.swift */; };
++		F20000000000000000000003 /* AvatarAnimation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000003 /* AvatarAnimation.swift */; };
++		F20000000000000000000004 /* WatchVoiceRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000004 /* WatchVoiceRecorder.swift */; };
++		F20000000000000000000005 /* SpriteAvatar.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000005 /* SpriteAvatar.swift */; };
++		F20000000000000000000006 /* AvatarConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000006 /* AvatarConversationView.swift */; };
++		F20000000000000000000008 /* AvatarPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000008 /* AvatarPresentation.swift */; };
++		F20000000000000000000009 /* CompanionAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000009 /* CompanionAppearance.swift */; };
++		F2000000000000000000000A /* CompanionAvatar.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000A /* CompanionAvatar.swift */; };
++		F2000000000000000000000B /* AvatarPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000B /* AvatarPickerView.swift */; };
++		F2000000000000000000000C /* ReplyReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000C /* ReplyReaderView.swift */; };
+ /* End PBXBuildFile section */
+ 
+ /* Begin PBXFileReference section */
+@@ -60,6 +71,17 @@
+ 		D00000000000000000000009 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WatchDotPhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
+ 		D0000000000000000000000A = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+ 		E00000000000000000000001 /* WatchDot.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = WatchDot.xcconfig; path = ../docs/config/WatchDot.xcconfig; sourceTree = SOURCE_ROOT; };
++		F10000000000000000000001 /* DotTranscription.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DotTranscription.swift; sourceTree = "<group>"; };
++		F10000000000000000000002 /* VoiceInputSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputSession.swift; sourceTree = "<group>"; };
++		F10000000000000000000003 /* AvatarAnimation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarAnimation.swift; sourceTree = "<group>"; };
++		F10000000000000000000004 /* WatchVoiceRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchVoiceRecorder.swift; sourceTree = "<group>"; };
++		F10000000000000000000005 /* SpriteAvatar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpriteAvatar.swift; sourceTree = "<group>"; };
++		F10000000000000000000006 /* AvatarConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarConversationView.swift; sourceTree = "<group>"; };
++		F10000000000000000000008 /* AvatarPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarPresentation.swift; sourceTree = "<group>"; };
++		F10000000000000000000009 /* CompanionAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionAppearance.swift; sourceTree = "<group>"; };
++		F1000000000000000000000A /* CompanionAvatar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionAvatar.swift; sourceTree = "<group>"; };
++		F1000000000000000000000B /* AvatarPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarPickerView.swift; sourceTree = "<group>"; };
++		F1000000000000000000000C /* ReplyReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplyReaderView.swift; sourceTree = "<group>"; };
+ /* End PBXFileReference section */
+ 
+ /* Begin PBXFrameworksBuildPhase section */
+@@ -100,6 +122,12 @@
+ 		A0000000000000000000000E /* WatchDotApp */ = {
+ 			isa = PBXGroup;
+ 			children = (
++				F1000000000000000000000A /* CompanionAvatar.swift */,
++				F1000000000000000000000B /* AvatarPickerView.swift */,
++				F1000000000000000000000C /* ReplyReaderView.swift */,
++				F10000000000000000000006 /* AvatarConversationView.swift */,
++				F10000000000000000000005 /* SpriteAvatar.swift */,
++				F10000000000000000000004 /* WatchVoiceRecorder.swift */,
+ 				A0000000000000000000000B /* WatchDotApp.swift */,
+ 				B00000000000000000000007 /* WatchBackgroundReceiver.swift */,
+ 				A0000000000000000000001A /* Assets.xcassets */,
+@@ -110,6 +138,11 @@
+ 		A0000000000000000000000F /* Sources/WatchDotCore */ = {
+ 			isa = PBXGroup;
+ 			children = (
++				F10000000000000000000008 /* AvatarPresentation.swift */,
++				F10000000000000000000009 /* CompanionAppearance.swift */,
++				F10000000000000000000003 /* AvatarAnimation.swift */,
++				F10000000000000000000002 /* VoiceInputSession.swift */,
++				F10000000000000000000001 /* DotTranscription.swift */,
+ 				A0000000000000000000000C /* Conversation.swift */,
+ 				B00000000000000000000001 /* Authentication.swift */,
+ 				B00000000000000000000002 /* ConnectionSession.swift */,
+@@ -221,6 +254,17 @@
+ 			isa = PBXSourcesBuildPhase;
+ 			buildActionMask = 2147483647;
+ 			files = (
++				F20000000000000000000008 /* AvatarPresentation.swift in Sources */,
++				F20000000000000000000009 /* CompanionAppearance.swift in Sources */,
++				F2000000000000000000000A /* CompanionAvatar.swift in Sources */,
++				F2000000000000000000000B /* AvatarPickerView.swift in Sources */,
++				F2000000000000000000000C /* ReplyReaderView.swift in Sources */,
++				F20000000000000000000006 /* AvatarConversationView.swift in Sources */,
++				F20000000000000000000005 /* SpriteAvatar.swift in Sources */,
++				F20000000000000000000004 /* WatchVoiceRecorder.swift in Sources */,
++				F20000000000000000000003 /* AvatarAnimation.swift in Sources */,
++				F20000000000000000000002 /* VoiceInputSession.swift in Sources */,
++				F20000000000000000000001 /* DotTranscription.swift in Sources */,
+ 				A00000000000000000000010 /* WatchDotApp.swift in Sources */,
+ 				A00000000000000000000011 /* Conversation.swift in Sources */,
+ 				B00000000000000000000011 /* Authentication.swift in Sources */,
+@@ -247,7 +291,7 @@
+ 			buildSettings = {
+ 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+ 				CODE_SIGNING_ALLOWED = YES;
+-                CURRENT_PROJECT_VERSION = 4;
++                CURRENT_PROJECT_VERSION = 6;
+                 MARKETING_VERSION = 1.1;
+ 				GENERATE_INFOPLIST_FILE = YES;
+ 				INFOPLIST_FILE = WatchDotApp/Info.plist;
+@@ -272,7 +316,7 @@
+ 			buildSettings = {
+ 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+ 				CODE_SIGNING_ALLOWED = YES;
+-                CURRENT_PROJECT_VERSION = 4;
++                CURRENT_PROJECT_VERSION = 6;
+                 MARKETING_VERSION = 1.1;
+ 				GENERATE_INFOPLIST_FILE = YES;
+ 				INFOPLIST_FILE = WatchDotApp/Info.plist;
+@@ -312,7 +356,7 @@
+ 		};
+ 		C00000000000000000000011 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES;
+                 CODE_SIGN_STYLE = Automatic;
+-                CURRENT_PROJECT_VERSION = 4;
++                CURRENT_PROJECT_VERSION = 6;
+                 MARKETING_VERSION = 1.1;
+                 GENERATE_INFOPLIST_FILE = YES;
+                 INFOPLIST_FILE = WatchDotComplication/Info.plist;
+@@ -327,7 +371,7 @@
+                 WATCHOS_DEPLOYMENT_TARGET = 10.0;}; name = Debug; };
+ 		C00000000000000000000012 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES;
+                 CODE_SIGN_STYLE = Automatic;
+-                CURRENT_PROJECT_VERSION = 4;
++                CURRENT_PROJECT_VERSION = 6;
+                 MARKETING_VERSION = 1.1;
+                 GENERATE_INFOPLIST_FILE = YES;
+                 INFOPLIST_FILE = WatchDotComplication/Info.plist;
+@@ -343,7 +387,7 @@
+         D00000000000000000000014 = {isa = XCBuildConfiguration; buildSettings = {
+             ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+             CODE_SIGN_STYLE = Automatic;
+-            CURRENT_PROJECT_VERSION = 4;
++            CURRENT_PROJECT_VERSION = 6;
+             MARKETING_VERSION = 1.1;
+             GENERATE_INFOPLIST_FILE = YES;
+             INFOPLIST_KEY_CFBundleDisplayName = "Watch Dot";
+@@ -360,7 +404,7 @@
+         D00000000000000000000015 = {isa = XCBuildConfiguration; buildSettings = {
+             ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+             CODE_SIGN_STYLE = Automatic;
+-            CURRENT_PROJECT_VERSION = 4;
++            CURRENT_PROJECT_VERSION = 6;
+             MARKETING_VERSION = 1.1;
+             GENERATE_INFOPLIST_FILE = YES;
+             INFOPLIST_KEY_CFBundleDisplayName = "Watch Dot";
+--- a/WatchDotApp/Info.plist
++++ b/WatchDotApp/Info.plist
+@@ -1,5 +1,8 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+ <plist version="1.0">
+-<dict/>
++<dict>
++	<key>NSMicrophoneUsageDescription</key>
++	<string>Record your voice when you tap the avatar and send it to ChatGPT for transcription.</string>
++</dict>
+ </plist>
+--- a/WatchDotApp/WatchDotApp.swift
++++ b/WatchDotApp/WatchDotApp.swift
+@@ -8,13 +8,22 @@
+     @StateObject private var session: ConversationSession
+     @StateObject private var connection: ConnectionSession
+ 
++    private var isLayoutPreview: Bool {
++        #if DEBUG && targetEnvironment(simulator)
++        ProcessInfo.processInfo.arguments.contains { ["--preview-chat", "--preview-reply", "--preview-refresh"].contains($0) }
++        #else
++        false
++        #endif
++    }
++
+     init() {
+         let directory = URL.applicationSupportDirectory.appendingPathComponent("WatchDot", isDirectory: true)
+         // Demo and real account/room histories remain in different stores.
+         var demoFile = "demo-conversation.json"
+         #if DEBUG && targetEnvironment(simulator)
+         let previewRefresh = ProcessInfo.processInfo.arguments.contains("--preview-refresh")
+-        let previewChat = ProcessInfo.processInfo.arguments.contains("--preview-chat") || previewRefresh
++        let previewReply = ProcessInfo.processInfo.arguments.contains("--preview-reply")
++        let previewChat = ProcessInfo.processInfo.arguments.contains("--preview-chat") || previewRefresh || previewReply
+         if previewChat { demoFile = "layout-preview.json" }
+         #endif
+         let store = FileConversationStore(url: directory.appendingPathComponent(demoFile))
+@@ -31,14 +40,21 @@
+         }
+         #endif
+         #if DEBUG && targetEnvironment(simulator)
+-        let transport: any ChatTransport = previewRefresh
+-            ? RefreshPreviewTransport(messages: (try? store.load())?.messages ?? []) : DemoChatTransport()
++        let transport: any ChatTransport
++        if previewRefresh {
++            transport = RefreshPreviewTransport(messages: (try? store.load())?.messages ?? [])
++        } else if previewChat {
++            transport = AvatarPreviewTransport()
++        } else {
++            transport = DemoChatTransport()
++        }
+         #else
+         let transport: any ChatTransport = DemoChatTransport()
+         #endif
+         let session = ConversationSession(transport: transport, store: store)
+         #if DEBUG && targetEnvironment(simulator)
+         if previewRefresh { session.resumeAutomatically() }
++        if previewReply { session.send("Show a long sample reply.") }
+         #endif
+         _session = StateObject(wrappedValue: session)
+         let bridge = CompanionConnectivity()
+@@ -61,7 +77,7 @@
+         WindowGroup {
+             ChatRootView(connection: connection, demo: session)
+                 .onAppear {
+-                    if scenePhase == .active {
++                    if scenePhase == .active && !isLayoutPreview {
+                         connection.enterForeground()
+                         refreshComplicationImageIfNeeded()
+                     }
+@@ -74,6 +90,7 @@
+                     if case .located = state { session.suspend() }
+                 }
+                 .onChange(of: scenePhase) { _, phase in
++                    guard !isLayoutPreview else { return }
+                     if phase == .background {
+                         session.suspend()
+                         connection.enterBackground()
+@@ -107,13 +124,28 @@
+     }
+ 
+     private func connectChatIfReady() {
+-        if scenePhase == .active, connection.phase == .signedIn, connection.dotProbeState == .idle {
++        if !isLayoutPreview, scenePhase == .active, connection.phase == .signedIn, connection.dotProbeState == .idle {
+             connection.probeDotAccess()
+         }
+     }
+ }
+ 
+ #if DEBUG && targetEnvironment(simulator)
++private struct AvatarPreviewTransport: ChatTransport {
++    let displayName = "Companion"
++    let isRealConnection = false
++    let supportsIdempotentRetry = true
++
++    func send(_ request: TurnRequest, onAccepted: @escaping @Sendable () async -> Void) async throws -> ChatMessage {
++        if ProcessInfo.processInfo.arguments.contains("--preview-reply") {
++            await onAccepted()
++            try await Task.sleep(for: .seconds(2))
++            return ChatMessage(role: .assistant, text: "Here's your day at a glance.\n\nStart with one clear priority. Give it an uninterrupted block of time, then take a short break.\n\nKeep the next step small enough to begin now. Write down what you need, remove distractions, and check your progress after the first block.\n\nYou can turn the Digital Crown or swipe to read a longer reply. Your message stays in History after you return to the avatar.\n\nWhen you're ready, tap Done or the close button above.")
++        }
++        return try await DemoChatTransport().send(request, onAccepted: onAccepted)
++    }
++}
++
+ /// An offline fixture for exercising pull, release and loading without a real account.
+ private actor RefreshPreviewTransport: ChatTransport {
+     let displayName = "Local preview"
+@@ -147,7 +179,7 @@
+         NavigationStack {
+             Group {
+                 if let session = connection.selectedConversation(demo: demo) {
+-                    ConversationView(session: session)
++                    selectedContent(session: session).id(session.conversationID)
+                 } else {
+                     VStack(spacing: 10) {
+                         ScrollView {
+@@ -173,10 +205,12 @@
+             }
+             .frame(maxWidth: .infinity, maxHeight: .infinity)
+             .toolbar {
+-                ToolbarItem(placement: .topBarLeading) {
+-                    ChatHeader(name: connection.directConversation?.transportName ?? "Dot",
+-                               color: connectionColor, status: connection.phase.title) {
+-                        showConnection = true
++                if connection.selectedConversation(demo: demo) == nil {
++                    ToolbarItem(placement: .topBarLeading) {
++                        ChatHeader(name: connection.directConversation?.transportName ?? "Dot",
++                                   color: connectionColor, status: connection.phase.title) {
++                            showConnection = true
++                        }
+                     }
+                 }
+             }
+@@ -184,6 +218,24 @@
+         .sheet(isPresented: $showConnection) {
+             ConnectionView(connection: connection, session: connection.selectedConversation(demo: demo) ?? demo)
+         }
++    }
++
++    @ViewBuilder
++    private func selectedContent(session: ConversationSession) -> some View {
++        #if DEBUG && targetEnvironment(simulator)
++        if ProcessInfo.processInfo.arguments.contains("--preview-refresh") {
++            ConversationView(session: session)
++        } else {
++            avatarHome(session: session)
++        }
++        #else
++        avatarHome(session: session)
++        #endif
++    }
++
++    private func avatarHome(session: ConversationSession) -> some View {
++        AvatarConversationView(session: session, connection: connection,
++            isSettingsPresented: showConnection) { showConnection = true }
+     }
+ 
+     private var connectionColor: Color {
+@@ -226,11 +278,13 @@
+     }
+ }
+ 
+-private struct ConversationView: View {
++struct ConversationView: View {
+     @Environment(\.scenePhase) private var scenePhase
+     @ObservedObject var session: ConversationSession
+     @State private var bottomPosition = CGFloat.greatestFiniteMagnitude
+     @State private var refreshGestureState = MessageRefreshGestureState()
++    @FocusState private var inputFocused: Bool
++    var focusInputOnAppear = false
+ 
+     var body: some View {
+         VStack(spacing: 4) {
+@@ -301,6 +355,7 @@
+ 
+             HStack(spacing: 6) {
+                 TextField("Message", text: $session.draft)
++                    .focused($inputFocused)
+                     .font(.footnote)
+                     .controlSize(.small)
+                     .submitLabel(.done)
+@@ -322,6 +377,7 @@
+         .onChange(of: scenePhase) { _, phase in
+             if phase != .active { refreshGestureState.cancel() }
+         }
++        .onAppear { inputFocused = focusInputOnAppear }
+         .task(id: session.conversationID) {
+             if scenePhase == .active, !session.isRealConnection { session.resumeAutomatically() }
+         }
+--- /dev/null
++++ b/Sources/WatchDotCore/AvatarAnimation.swift
+@@ -0,0 +1,46 @@
++import Foundation
++
++/// Timings for the optional sprite atlas contract. Each cell is 192 by 208 pixels.
++public enum AvatarAnimation: CaseIterable, Sendable {
++    case idle, listening, working, replied, failed
++
++    public static let columns = 8
++    public static let rows = 11
++    public static let cellWidth = 192
++    public static let cellHeight = 208
++
++    public var row: Int {
++        switch self {
++        case .idle: 0
++        case .listening: 6
++        case .working: 7
++        case .replied: 8
++        case .failed: 5
++        }
++    }
++
++    public var durationsMilliseconds: [Int] {
++        switch self {
++        case .idle: [280, 110, 110, 140, 140, 320]
++        case .listening: [150, 150, 150, 150, 150, 260]
++        case .working: [120, 120, 120, 120, 120, 220]
++        case .replied: [150, 150, 150, 150, 150, 280]
++        case .failed: [140, 140, 140, 140, 140, 140, 140, 240]
++        }
++    }
++
++    public func frame(at elapsed: TimeInterval) -> Int {
++        guard elapsed.isFinite, elapsed > 0 else { return 0 }
++        let durations = durationsMilliseconds
++        let cycle = durations.reduce(0, +)
++        let milliseconds = (elapsed * 1_000).truncatingRemainder(dividingBy: Double(cycle))
++        return durations.indices.first { index in
++            milliseconds < Double(durations.prefix(index + 1).reduce(0, +))
++        } ?? 0
++    }
++
++    public static func displayed(_ animation: Self, active: Bool, reduceMotion: Bool,
++                                 luminanceReduced: Bool) -> Self {
++        active && !reduceMotion && !luminanceReduced ? animation : .idle
++    }
++}
+--- /dev/null
++++ b/Sources/WatchDotCore/AvatarPresentation.swift
+@@ -0,0 +1,52 @@
++import Foundation
++
++/// Runtime presentation only. History hydration and dismissed replies never reopen the reader.
++public struct AvatarPresentation: Equatable, Sendable {
++    public let visibleReplies: [ChatMessage]
++    public let pendingReplies: [ChatMessage]
++    public let seenIDs: Set<UUID>
++
++    public init(baselineReplies: [ChatMessage] = []) {
++        self.init(visibleReplies: [], pendingReplies: [], seenIDs: Set(baselineReplies.map(\.id)))
++    }
++
++    private init(visibleReplies: [ChatMessage], pendingReplies: [ChatMessage], seenIDs: Set<UUID>) {
++        self.visibleReplies = visibleReplies
++        self.pendingReplies = pendingReplies
++        self.seenIDs = seenIDs
++    }
++
++    public func receiving(_ replies: [ChatMessage], canPresent: Bool) -> Self {
++        replies.reduce(self) { state, reply in state.receiving(reply) }
++            .presentingPending(ifAllowed: canPresent)
++    }
++
++    public func presentingPending(ifAllowed allowed: Bool) -> Self {
++        guard allowed, !pendingReplies.isEmpty else { return self }
++        return Self(visibleReplies: visibleReplies + pendingReplies, pendingReplies: [], seenIDs: seenIDs)
++    }
++
++    public func dismissing() -> Self {
++        Self(visibleReplies: [], pendingReplies: pendingReplies, seenIDs: seenIDs)
++    }
++
++    private func receiving(_ reply: ChatMessage) -> Self {
++        guard reply.role == .assistant,
++              !reply.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return self }
++        if visibleReplies.contains(where: { $0.id == reply.id }) {
++            return Self(visibleReplies: replacing(reply, in: visibleReplies),
++                        pendingReplies: pendingReplies, seenIDs: seenIDs)
++        }
++        if pendingReplies.contains(where: { $0.id == reply.id }) {
++            return Self(visibleReplies: visibleReplies, pendingReplies: replacing(reply, in: pendingReplies),
++                        seenIDs: seenIDs)
++        }
++        guard !seenIDs.contains(reply.id) else { return self }
++        return Self(visibleReplies: visibleReplies, pendingReplies: pendingReplies + [reply],
++                    seenIDs: seenIDs.union([reply.id]))
++    }
++
++    private func replacing(_ reply: ChatMessage, in replies: [ChatMessage]) -> [ChatMessage] {
++        replies.map { $0.id == reply.id ? reply : $0 }
++    }
++}
+--- /dev/null
++++ b/Sources/WatchDotCore/CompanionAppearance.swift
+@@ -0,0 +1,25 @@
++/// Local presentation preferences, independent of the connected account and companion.
++public enum CompanionAppearance: String, CaseIterable, Sendable, Identifiable {
++    case sprite, pebble, orbit, pixel
++
++    public var id: String { rawValue }
++
++    public static func available(spriteAvailable: Bool) -> [Self] {
++        allCases.filter { spriteAvailable || $0 != .sprite }
++    }
++
++    public static func resolve(savedID: String, spriteAvailable: Bool) -> Self {
++        guard let appearance = Self(rawValue: savedID),
++              appearance != .sprite || spriteAvailable else { return .pebble }
++        return appearance
++    }
++
++    public func displayName(spriteName: String) -> String {
++        switch self {
++        case .sprite: spriteName
++        case .pebble: "Pebble"
++        case .orbit: "Orbit"
++        case .pixel: "Pixel"
++        }
++    }
++}
+--- /dev/null
++++ b/Sources/WatchDotCore/DotTranscription.swift
+@@ -0,0 +1,67 @@
++import Foundation
++
++struct DotTranscription: Sendable {
++    private let http: any SignInHTTP
++    init(http: any SignInHTTP = SecureSignInHTTP(requestTimeout: 60, resourceTimeout: 60)) {
++        self.http = http
++    }
++
++    func transcribe(_ clip: VoiceClip, account: SignedInAccount, destination: LocatedDot,
++                    now: Date) async throws -> String {
++        try Task.checkCancellation()
++        try clip.validate()
++        guard account.clientID == OpenAIOAuthClient.codex, account.expiresAt > now,
++              let token = account.accessToken else { throw VoiceInputIssue.sessionChanged }
++        do {
++            let identity = try DotAccessProbe(http: http).routingIdentity(token, account: account, now: now)
++            guard identity.accountID == destination.accountID, identity.userID == destination.userID else {
++                throw VoiceInputIssue.sessionChanged
++            }
++        } catch { throw VoiceInputIssue.sessionChanged }
++        let response: SignInHTTPResponse
++        do { response = try await http.sendWithMetadata(makeRequest(clip, token: token, accountID: destination.accountID)) }
++        catch is CancellationError { throw CancellationError() }
++        catch { throw VoiceInputIssue.unavailable }
++        try Task.checkCancellation()
++        guard !response.clientChallenge else { throw VoiceInputIssue.challenge }
++        guard response.status == 200 else {
++            if response.status == 401 { throw VoiceInputIssue.sessionChanged }
++            throw VoiceInputIssue.transcriptionHTTP(response.status)
++        }
++        guard response.data.count <= 256_000,
++              response.contentType == .json || response.contentType == .unknown,
++              let value = try? JSONDecoder().decode(Transcript.self, from: response.data) else {
++            throw VoiceInputIssue.malformedResponse
++        }
++        return try Self.validatedText(value.text)
++    }
++
++    static func validatedText(_ text: String) throws -> String {
++        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !cleaned.isEmpty else { throw VoiceInputIssue.noSpeech }
++        guard cleaned.utf8.count <= 8_000 else { throw VoiceInputIssue.transcriptTooLong }
++        return cleaned
++    }
++
++    private func makeRequest(_ clip: VoiceClip, token: String, accountID: String) -> URLRequest {
++        let boundary = "WatchDot-\(UUID().uuidString)"
++        let prefix = "--\(boundary)\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\nen\r\n" +
++            "--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"voice.m4a\"\r\n" +
++            "Content-Type: audio/mp4\r\n\r\n"
++        let body = Data(prefix.utf8) + clip.data + Data("\r\n--\(boundary)--\r\n".utf8)
++        var request = URLRequest(url: URL(string: "https://chatgpt.com/backend-api/transcribe")!,
++                                 cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 60)
++        request.httpMethod = "POST"
++        request.httpBody = body
++        request.httpShouldHandleCookies = false
++        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
++        request.setValue(accountID, forHTTPHeaderField: "ChatGPT-Account-Id")
++        request.setValue("watch-dot", forHTTPHeaderField: "originator")
++        request.setValue("WatchDot/1.0", forHTTPHeaderField: "User-Agent")
++        request.setValue("application/json", forHTTPHeaderField: "Accept")
++        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
++        return request
++    }
++
++    private struct Transcript: Decodable { let text: String }
++}
+--- /dev/null
++++ b/Sources/WatchDotCore/VoiceInputSession.swift
+@@ -0,0 +1,180 @@
++import Foundation
++import Combine
++
++public enum VoiceInputIssue: Error, Equatable, LocalizedError {
++    case permissionDenied, microphoneUnavailable, interrupted, noSpeech, invalidAudio
++    case unavailable, sessionChanged, malformedResponse, transcriptTooLong, sendRejected
++    case transcriptionHTTP(Int), challenge
++
++    public var message: String {
++        switch self {
++        case .permissionDenied: "Allow microphone access in Settings, or use text input."
++        case .microphoneUnavailable: "The microphone is unavailable. Try again or use text input."
++        case .interrupted: "Recording was interrupted. Try again."
++        case .noSpeech: "No speech was detected. Try again."
++        case .invalidAudio: "The recording could not be used. Try again."
++        case .unavailable: "Voice transcription is unavailable. Try again or use text input."
++        case .challenge: "Voice transcription requires service verification. Use text input."
++        case .transcriptionHTTP(let status):
++            switch status {
++            case 403: "Voice transcription access was denied (HTTP 403). Use text input."
++            case 429: "Voice transcription reached a service limit (HTTP 429). Wait before trying again."
++            default: "Voice transcription is unavailable (HTTP \(status)). Try again or use text input."
++            }
++        case .sessionChanged: "Your connection changed. Start a new recording."
++        case .malformedResponse: "The transcription response could not be read. Try again."
++        case .transcriptTooLong: "The transcript is too long. Try a shorter recording."
++        case .sendRejected: "Your message could not be sent. Review or copy the transcript."
++        }
++    }
++    public var errorDescription: String? { message }
++}
++
++public struct VoiceClip: Sendable {
++    public let data: Data
++    public let duration: TimeInterval
++    public let hasSpeech: Bool
++    public init(data: Data, duration: TimeInterval, hasSpeech: Bool) {
++        self.data = data; self.duration = duration; self.hasSpeech = hasSpeech
++    }
++    func validate() throws {
++        guard hasSpeech else { throw VoiceInputIssue.noSpeech }
++        guard !data.isEmpty, data.count <= 2_000_000, duration.isFinite,
++              duration > 0, duration <= 60 else { throw VoiceInputIssue.invalidAudio }
++    }
++}
++
++@MainActor public protocol VoiceRecording: AnyObject {
++    var level: Double { get }
++    var recordingIssue: VoiceInputIssue? { get }
++    func start() async throws
++    func stop() throws -> VoiceClip
++    func cancel()
++}
++
++extension VoiceRecording {
++    public var recordingIssue: VoiceInputIssue? { nil }
++}
++
++@MainActor public struct VoiceTurn {
++    let transcribe: @MainActor (VoiceClip) async throws -> String
++    let send: @MainActor (String) -> Bool
++    public init(transcribe: @escaping @MainActor (VoiceClip) async throws -> String,
++                send: @escaping @MainActor (String) -> Bool) {
++        self.transcribe = transcribe; self.send = send
++    }
++}
++
++public enum VoiceInputPhase: Equatable { case idle, requesting, listening, transcribing, failed }
++
++@MainActor public final class VoiceInputSession: ObservableObject {
++    @Published public private(set) var phase: VoiceInputPhase = .idle
++    @Published public private(set) var level: Double = 0
++    @Published public private(set) var elapsed: TimeInterval = 0
++    @Published public private(set) var errorMessage: String?
++    @Published public private(set) var retainedTranscript: String?
++    private let recorder: any VoiceRecording
++    private let prepare: @MainActor () throws -> VoiceTurn
++    private let now: () -> Date
++    private var operation: UUID?
++    private var work: Task<Void, Never>?
++    private var meter: Task<Void, Never>?
++    private var turn: VoiceTurn?
++    private var startedAt: Date?
++
++    public init(recorder: any VoiceRecording, prepare: @escaping @MainActor () throws -> VoiceTurn,
++                now: @escaping () -> Date = Date.init) {
++        self.recorder = recorder; self.prepare = prepare; self.now = now
++    }
++
++    public func tap() {
++        switch phase {
++        case .idle, .failed: begin()
++        case .listening: finish()
++        case .requesting, .transcribing: break
++        }
++    }
++
++    public func cancel() {
++        operation = nil
++        work?.cancel(); work = nil
++        meter?.cancel(); meter = nil
++        recorder.cancel()
++        turn = nil; startedAt = nil
++        level = 0; elapsed = 0; errorMessage = nil; retainedTranscript = nil
++        phase = .idle
++    }
++
++    private func begin() {
++        cancel()
++        let id = UUID()
++        operation = id
++        do { turn = try prepare() }
++        catch { fail(error, operation: id); return }
++        phase = .requesting
++        work = Task { [weak self] in
++            guard let self else { return }
++            do {
++                try await self.recorder.start()
++                guard self.operation == id, !Task.isCancelled else { return }
++                self.startedAt = self.now()
++                self.phase = .listening
++                self.work = nil
++                self.startMeter(operation: id)
++            } catch { self.fail(error, operation: id) }
++        }
++    }
++
++    private func startMeter(operation id: UUID) {
++        meter = Task { [weak self] in
++            while !Task.isCancelled {
++                do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
++                guard let self, self.operation == id, self.phase == .listening else { return }
++                self.sampleRecording()
++            }
++        }
++    }
++
++    // Internal entry point permits deterministic limit/interruption tests without real-time waits.
++    func sampleRecording() {
++        guard phase == .listening, let id = operation, let startedAt else { return }
++        if let issue = recorder.recordingIssue { fail(issue, operation: id); return }
++        level = recorder.level.isFinite ? min(1, max(0, recorder.level)) : 0
++        elapsed = max(0, now().timeIntervalSince(startedAt))
++        if elapsed >= 60 { finish() }
++    }
++
++    private func finish() {
++        guard phase == .listening, let id = operation, let turn else { return }
++        phase = .transcribing
++        meter?.cancel(); meter = nil; level = 0
++        do {
++            let clip = try recorder.stop()
++            try clip.validate()
++            work = Task { [weak self] in
++                do {
++                    let text = try await turn.transcribe(clip)
++                    guard let self, self.operation == id, !Task.isCancelled else { return }
++                    let transcript = try DotTranscription.validatedText(text)
++                    // Consume the operation before handing off synchronously. Existing send recovery owns acceptance.
++                    self.operation = nil; self.work = nil; self.turn = nil
++                    if turn.send(transcript) { self.phase = .idle; self.elapsed = 0 }
++                    else {
++                        self.retainedTranscript = transcript
++                        self.errorMessage = VoiceInputIssue.sendRejected.message
++                        self.phase = .failed
++                    }
++                } catch { self?.fail(error, operation: id) }
++            }
++        } catch { fail(error, operation: id) }
++    }
++
++    private func fail(_ error: Error, operation id: UUID) {
++        guard operation == id else { return }
++        operation = nil
++        work = nil; meter?.cancel(); meter = nil; turn = nil
++        recorder.cancel(); level = 0
++        errorMessage = (error as? VoiceInputIssue)?.message ?? VoiceInputIssue.unavailable.message
++        phase = .failed
++    }
++}
+--- /dev/null
++++ b/Tests/WatchDotCoreTests/AvatarAnimationTests.swift
+@@ -0,0 +1,47 @@
++import XCTest
++@testable import WatchDotCore
++
++final class AvatarAnimationTests: XCTestCase {
++    func testDocumentedRowsAndDurations() {
++        XCTAssertEqual(AvatarAnimation.idle.row, 0)
++        XCTAssertEqual(AvatarAnimation.listening.row, 6)
++        XCTAssertEqual(AvatarAnimation.working.row, 7)
++        XCTAssertEqual(AvatarAnimation.replied.row, 8)
++        XCTAssertEqual(AvatarAnimation.failed.row, 5)
++        XCTAssertEqual(AvatarAnimation.idle.durationsMilliseconds, [280, 110, 110, 140, 140, 320])
++        XCTAssertEqual(AvatarAnimation.listening.durationsMilliseconds, [150, 150, 150, 150, 150, 260])
++        XCTAssertEqual(AvatarAnimation.working.durationsMilliseconds, [120, 120, 120, 120, 120, 220])
++        XCTAssertEqual(AvatarAnimation.replied.durationsMilliseconds, [150, 150, 150, 150, 150, 280])
++        XCTAssertEqual(AvatarAnimation.failed.durationsMilliseconds, [140, 140, 140, 140, 140, 140, 140, 240])
++    }
++
++    func testEveryFrameBoundaryAndCycleUsesFixedGrid() {
++        for animation in AvatarAnimation.allCases {
++            XCTAssertLessThan(animation.row, AvatarAnimation.rows)
++            XCTAssertLessThanOrEqual(animation.durationsMilliseconds.count, AvatarAnimation.columns)
++            let duration = animation.durationsMilliseconds.reduce(0, +)
++            for millisecond in 0..<(duration * 2) {
++                let position = millisecond % duration
++                let expected = animation.durationsMilliseconds.indices.first { index in
++                    position < animation.durationsMilliseconds.prefix(index + 1).reduce(0, +)
++                }
++                XCTAssertEqual(animation.frame(at: (Double(millisecond) + 0.1) / 1_000), expected)
++            }
++        }
++        XCTAssertEqual(AvatarAnimation.columns * AvatarAnimation.cellWidth, 1536)
++        XCTAssertEqual(AvatarAnimation.rows * AvatarAnimation.cellHeight, 2288)
++    }
++
++    func testInactiveReducedMotionAndAlwaysOnShowIdle() {
++        XCTAssertEqual(AvatarAnimation.displayed(.working, active: false, reduceMotion: false, luminanceReduced: false), .idle)
++        XCTAssertEqual(AvatarAnimation.displayed(.working, active: true, reduceMotion: true, luminanceReduced: false), .idle)
++        XCTAssertEqual(AvatarAnimation.displayed(.working, active: true, reduceMotion: false, luminanceReduced: true), .idle)
++        XCTAssertEqual(AvatarAnimation.displayed(.working, active: true, reduceMotion: false, luminanceReduced: false), .working)
++    }
++
++    func testInvalidOrInitialTimeUsesFirstFrame() {
++        for value in [Double.nan, .infinity, -.infinity, -1, 0] {
++            XCTAssertEqual(AvatarAnimation.idle.frame(at: value), 0)
++        }
++    }
++}
+--- /dev/null
++++ b/Tests/WatchDotCoreTests/AvatarPresentationTests.swift
+@@ -0,0 +1,99 @@
++import XCTest
++@testable import WatchDotCore
++
++final class AvatarPresentationTests: XCTestCase {
++    func testBaselineRepliesDoNotOpenReader() {
++        let historical = reply("History")
++        let state = AvatarPresentation(baselineReplies: [historical])
++            .receiving([historical], canPresent: true)
++        XCTAssertTrue(state.visibleReplies.isEmpty)
++        XCTAssertTrue(state.pendingReplies.isEmpty)
++    }
++
++    func testNewReplyPresentsOnceAndPreservesInputState() {
++        let initial = AvatarPresentation()
++        let answer = reply("Answer")
++        let presented = initial.receiving([answer, answer], canPresent: true)
++        XCTAssertEqual(presented.visibleReplies, [answer])
++        XCTAssertEqual(presented.receiving([answer], canPresent: true), presented)
++        XCTAssertTrue(initial.visibleReplies.isEmpty)
++        XCTAssertTrue(initial.seenIDs.isEmpty)
++    }
++
++    func testBlockedRepliesQueueAndPresentTogetherWhenAllowed() {
++        let first = reply("First")
++        let second = reply("Second")
++        let waiting = AvatarPresentation().receiving([first, second], canPresent: false)
++        XCTAssertTrue(waiting.visibleReplies.isEmpty)
++        XCTAssertEqual(waiting.pendingReplies, [first, second])
++        XCTAssertEqual(waiting.presentingPending(ifAllowed: false), waiting)
++        let shown = waiting.presentingPending(ifAllowed: true)
++        XCTAssertEqual(shown.visibleReplies, [first, second])
++        XCTAssertTrue(shown.pendingReplies.isEmpty)
++    }
++
++    func testNewReplyAppendsToExistingReader() {
++        let first = reply("First")
++        let second = reply("Second")
++        let state = AvatarPresentation().receiving([first], canPresent: true)
++            .receiving([first, second], canPresent: true)
++        XCTAssertEqual(state.visibleReplies, [first, second])
++    }
++
++    func testSameIDUpdatesVisibleAndQueuedTextWithoutDuplicates() {
++        let first = reply("First")
++        let changed = reply("Expanded answer", id: first.id)
++        let visible = AvatarPresentation().receiving([first], canPresent: true)
++            .receiving([changed], canPresent: false)
++        XCTAssertEqual(visible.visibleReplies, [changed])
++        XCTAssertTrue(visible.pendingReplies.isEmpty)
++        let waiting = AvatarPresentation().receiving([first], canPresent: false)
++            .receiving([changed, changed], canPresent: false)
++        XCTAssertEqual(waiting.pendingReplies, [changed])
++    }
++
++    func testBlockedNewReplyDoesNotInterruptVisibleReader() {
++        let first = reply("First")
++        let second = reply("Second")
++        let waiting = AvatarPresentation().receiving([first], canPresent: true)
++            .receiving([second], canPresent: false)
++        XCTAssertEqual(waiting.visibleReplies, [first])
++        XCTAssertEqual(waiting.pendingReplies, [second])
++        XCTAssertEqual(waiting.presentingPending(ifAllowed: true).visibleReplies, [first, second])
++    }
++
++    func testDismissedRepliesDoNotResurrectEvenWithUpdatedText() {
++        let first = reply("First")
++        let closed = AvatarPresentation().receiving([first], canPresent: true).dismissing()
++        let repeated = closed.receiving([reply("Updated", id: first.id)], canPresent: true)
++        XCTAssertTrue(repeated.visibleReplies.isEmpty)
++        XCTAssertTrue(repeated.pendingReplies.isEmpty)
++    }
++
++    func testDismissPreservesBlockedNewReplies() {
++        let first = reply("First")
++        let second = reply("Second")
++        let closed = AvatarPresentation().receiving([first], canPresent: true)
++            .receiving([second], canPresent: false).dismissing()
++        XCTAssertEqual(closed.presentingPending(ifAllowed: true).visibleReplies, [second])
++    }
++
++    func testResetClearsPriorConversationAndAcceptsNewEvents() {
++        let prior = reply("Prior account")
++        let initial = AvatarPresentation().receiving([prior], canPresent: false)
++        let reset = AvatarPresentation()
++        XCTAssertFalse(initial.pendingReplies.isEmpty)
++        XCTAssertTrue(reset.pendingReplies.isEmpty)
++        XCTAssertTrue(reset.seenIDs.isEmpty)
++        XCTAssertEqual(reset.receiving([prior], canPresent: true).visibleReplies, [prior])
++    }
++
++    func testUserAndBlankMessagesCannotOpenReader() {
++        let invalid = [ChatMessage(role: .user, text: "Input"), reply(" \n")]
++        XCTAssertEqual(AvatarPresentation().receiving(invalid, canPresent: true), AvatarPresentation())
++    }
++
++    private func reply(_ text: String, id: UUID = UUID()) -> ChatMessage {
++        ChatMessage(id: id, role: .assistant, text: text)
++    }
++}
+--- /dev/null
++++ b/Tests/WatchDotCoreTests/CompanionAppearanceTests.swift
+@@ -0,0 +1,38 @@
++import XCTest
++@testable import WatchDotCore
++
++final class CompanionAppearanceTests: XCTestCase {
++    func testMissingOptionalAssetFallsBackWithoutChangingSavedIdentity() {
++        let savedID = "sprite"
++        XCTAssertEqual(CompanionAppearance.resolve(savedID: savedID, spriteAvailable: false), .pebble)
++        XCTAssertEqual(CompanionAppearance.resolve(savedID: savedID, spriteAvailable: true), .sprite)
++    }
++
++    func testUnknownPersistedValueResolvesToOriginalInEitherBuild() {
++        for value in ["", "removed-appearance", "SPRITE"] {
++            XCTAssertEqual(CompanionAppearance.resolve(savedID: value, spriteAvailable: false), .pebble)
++            XCTAssertEqual(CompanionAppearance.resolve(savedID: value, spriteAvailable: true), .pebble)
++        }
++    }
++
++    func testOriginalPreferencesSurviveOptionalAssetChanges() {
++        for appearance in [CompanionAppearance.pebble, .orbit, .pixel] {
++            for spriteAvailable in [true, false] {
++                XCTAssertEqual(CompanionAppearance.resolve(savedID: appearance.rawValue,
++                    spriteAvailable: spriteAvailable), appearance)
++            }
++        }
++    }
++
++    func testUnavailableSpriteCannotAppearInPicker() {
++        XCTAssertEqual(CompanionAppearance.available(spriteAvailable: false), [.pebble, .orbit, .pixel])
++        XCTAssertEqual(CompanionAppearance.available(spriteAvailable: true), [.sprite, .pebble, .orbit, .pixel])
++    }
++
++    func testSpriteUsesConnectedNameWhileOriginalNamesStayStable() {
++        XCTAssertEqual(CompanionAppearance.sprite.displayName(spriteName: "My Companion"), "My Companion")
++        XCTAssertEqual(CompanionAppearance.pebble.displayName(spriteName: "My Companion"), "Pebble")
++        XCTAssertEqual(CompanionAppearance.orbit.displayName(spriteName: "My Companion"), "Orbit")
++        XCTAssertEqual(CompanionAppearance.pixel.displayName(spriteName: "My Companion"), "Pixel")
++    }
++}
+--- /dev/null
++++ b/Tests/WatchDotCoreTests/ConversationArrivalTests.swift
+@@ -0,0 +1,178 @@
++import XCTest
++@testable import WatchDotCore
++
++private actor ArrivalTransport: ChatTransport {
++    let displayName = "Fixture"
++    let isRealConnection = false
++    let supportsHistorySync = true
++    let allowsSendingWhileAwaitingReply: Bool
++    private let answer: ChatMessage
++    private let history: [RoomMessage]
++    private let followUp: [RoomMessage]
++
++    init(answer: ChatMessage, history: [ChatMessage] = [], followUp: [ChatMessage] = [],
++         allowsConcurrentInput: Bool = false, undatedIDs: Set<UUID> = []) {
++        self.answer = answer
++        self.allowsSendingWhileAwaitingReply = allowsConcurrentInput
++        self.history = history.map(Self.roomMessage)
++        self.followUp = followUp.map { message in
++            RoomMessage(remoteID: message.id.uuidString, message: message, requestID: nil, replyTo: nil,
++                        serverCreatedAt: undatedIDs.contains(message.id) ? nil : message.createdAt)
++        }
++    }
++
++    func send(_ request: TurnRequest, onAccepted: @escaping @Sendable () async -> Void) async throws -> ChatMessage {
++        await onAccepted()
++        return answer
++    }
++
++    func recentMessages(limit: Int) async throws -> [RoomMessage] { history }
++    func additionalMessages() async throws -> [RoomMessage] { followUp }
++
++    private static func roomMessage(_ message: ChatMessage) -> RoomMessage {
++        RoomMessage(remoteID: message.id.uuidString, message: message, requestID: nil, replyTo: nil)
++    }
++}
++
++@MainActor
++private final class ArrivalStore: ConversationStore {
++    var snapshot: ConversationSnapshot?
++    func load() throws -> ConversationSnapshot? { snapshot }
++    func save(_ snapshot: ConversationSnapshot) throws { self.snapshot = snapshot }
++}
++
++@MainActor
++final class ConversationArrivalTests: XCTestCase {
++    func testSuccessfulTurnEmitsRuntimeReplyButRelaunchDoesNot() async {
++        let answer = reply("New answer")
++        let store = ArrivalStore()
++        let transport = ArrivalTransport(answer: answer)
++        let session = ConversationSession(transport: transport, store: store)
++        XCTAssertTrue(session.send("Question"))
++        await wait { session.deliveryState == .answered }
++        XCTAssertEqual(session.receivedReplies, [answer])
++        let restored = ConversationSession(transport: transport, store: store)
++        XCTAssertTrue(restored.messages.contains(answer))
++        XCTAssertTrue(restored.receivedReplies.isEmpty)
++    }
++
++    func testHistorySyncAndBackgroundReloadNeverEmitArrivals() async {
++        let historical = reply("History")
++        let store = ArrivalStore()
++        let transport = ArrivalTransport(answer: reply("Unused"), history: [historical])
++        let session = ConversationSession(transport: transport, store: store)
++        session.resumeAutomatically()
++        session.synchronizeRecentMessages()
++        await wait { !session.isSynchronizing }
++        XCTAssertEqual(session.messages, [historical])
++        XCTAssertTrue(session.receivedReplies.isEmpty)
++        session.reloadAfterBackground()
++        XCTAssertEqual(session.messages, [historical])
++        XCTAssertTrue(session.receivedReplies.isEmpty)
++        session.suspend()
++    }
++
++    func testAcceptedInputsObservingSameRemoteAnswerEmitOnlyOneReply() async {
++        let answer = reply("Shared answer")
++        let transport = ArrivalTransport(answer: answer, allowsConcurrentInput: true)
++        let session = ConversationSession(transport: transport)
++        session.send("First question")
++        await wait { session.deliveryState == .answered }
++        session.send("Additional question")
++        await wait { session.deliveryState == .answered }
++        XCTAssertEqual(session.receivedReplies, [answer])
++        XCTAssertEqual(session.messages.filter { $0.role == .assistant }, [answer])
++    }
++
++    func testFollowUpEmitsNewRepliesAndLiveUpdatesButNotOldHistory() async {
++        let historical = reply("Old history")
++        let first = reply("First answer")
++        let updated = reply("Expanded first answer", id: first.id)
++        let second = reply("Additional answer", at: first.createdAt.addingTimeInterval(1))
++        let editedHistory = reply("Edited history", id: historical.id)
++        let transport = ArrivalTransport(answer: first, history: [historical],
++            followUp: [editedHistory, updated, second, ChatMessage(role: .user, text: "Another input")])
++        let session = ConversationSession(transport: transport, followUpDelay: 0.03)
++        session.resumeAutomatically()
++        session.synchronizeRecentMessages()
++        await wait { !session.isSynchronizing }
++        session.send("Question")
++        await wait { session.deliveryState == .answered && session.followUpUntil == nil }
++        XCTAssertEqual(session.receivedReplies, [updated, second])
++        XCTAssertTrue(session.messages.contains(editedHistory))
++        session.suspend()
++    }
++
++    func testFollowUpKeepsRuntimeEventBufferBounded() async {
++        let first = reply("First answer")
++        let additions = (0..<40).map { reply("Additional answer \($0)",
++            at: first.createdAt.addingTimeInterval(Double($0 + 1))) }
++        let transport = ArrivalTransport(answer: first, followUp: additions)
++        let session = ConversationSession(transport: transport, followUpDelay: 0.01)
++        session.resumeAutomatically()
++        session.send("Question")
++        await wait { session.deliveryState == .answered && session.followUpUntil == nil }
++        XCTAssertEqual(session.receivedReplies, Array(additions.suffix(32)))
++        session.suspend()
++    }
++
++    func testMissingServerTimestampCannotPromoteOldHistoryUsingItsDisplayDate() async {
++        let first = reply("Matched answer")
++        let undated = reply("Old undated history", at: first.createdAt.addingTimeInterval(30))
++        let later = reply("Dated follow-up", at: first.createdAt.addingTimeInterval(1))
++        let transport = ArrivalTransport(answer: first, followUp: [undated, later], undatedIDs: [undated.id])
++        let session = ConversationSession(transport: transport, followUpDelay: 0.01)
++        session.resumeAutomatically()
++        session.send("Question")
++        await wait { session.deliveryState == .answered && session.followUpUntil == nil }
++        XCTAssertEqual(session.receivedReplies, [first, later])
++        XCTAssertTrue(session.messages.contains(undated))
++        session.suspend()
++    }
++
++    func testSparseHistoryFollowUpExcludesOlderAndEqualTimestampReplies() async {
++        let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
++        let first = reply("Matched answer", at: timestamp)
++        let older = reply("Older uncached history", at: timestamp.addingTimeInterval(-60))
++        let tied = reply("Ambiguous timestamp", at: timestamp)
++        let later = reply("Genuine follow-up", at: timestamp.addingTimeInterval(1))
++        let transport = ArrivalTransport(answer: first, followUp: [older, first, tied, later])
++        let session = ConversationSession(transport: transport, followUpDelay: 0.01)
++        session.resumeAutomatically()
++        session.send("Question")
++        await wait { session.deliveryState == .answered && session.followUpUntil == nil }
++        XCTAssertEqual(session.receivedReplies, [first, later])
++        XCTAssertTrue(session.messages.contains(older))
++        XCTAssertTrue(session.messages.contains(tied))
++        session.suspend()
++    }
++
++    func testRestoredFollowUpWithoutLiveBaselineOnlyMergesHistory() async {
++        let first = reply("Saved answer")
++        let unseen = reply("Uncached remote message")
++        let store = ArrivalStore()
++        let transport = ArrivalTransport(answer: first, followUp: [unseen])
++        let original = ConversationSession(transport: transport, store: store, followUpDelay: 0.03)
++        original.send("Question")
++        await wait { original.deliveryState == .answered }
++        original.suspend()
++        let restored = ConversationSession(transport: transport, store: store)
++        restored.resumeAutomatically()
++        await wait { restored.followUpUntil == nil }
++        XCTAssertTrue(restored.messages.contains(unseen))
++        XCTAssertTrue(restored.receivedReplies.isEmpty)
++        restored.suspend()
++    }
++
++    private func reply(_ text: String, id: UUID = UUID(), at date: Date = .now) -> ChatMessage {
++        ChatMessage(id: id, role: .assistant, text: text, createdAt: date)
++    }
++
++    private func wait(until condition: @escaping @MainActor () -> Bool) async {
++        let deadline = ContinuousClock.now + .seconds(2)
++        while !condition() && ContinuousClock.now < deadline {
++            try? await Task.sleep(for: .milliseconds(5))
++        }
++        XCTAssertTrue(condition(), "Timed out waiting for the conversation")
++    }
++}
+--- /dev/null
++++ b/Tests/WatchDotCoreTests/DotTranscriptionTests.swift
+@@ -0,0 +1,147 @@
++import XCTest
++@testable import WatchDotCore
++
++let voiceFixtureNow = Date(timeIntervalSince1970: 1_800_000_000)
++func voiceFixtureAccount(accountID: String = "account-fixture", userID: String = "user-fixture") throws -> SignedInAccount {
++    let routing = ["chatgpt_account_id": accountID, "user_id": userID]
++    func token(_ claims: [String: Any]) throws -> String {
++        "fixture.\(try JSONSerialization.data(withJSONObject: claims).base64URL).fixture"
++    }
++    return SignedInAccount(subject: "voice-subject", clientID: OpenAIOAuthClient.codex, email: nil,
++        expiresAt: voiceFixtureNow.addingTimeInterval(3600),
++        idToken: try token(["sub": "voice-subject", "https://api.openai.com/auth": routing]),
++        accessToken: try token(["exp": voiceFixtureNow.addingTimeInterval(3600).timeIntervalSince1970,
++                               "https://api.openai.com/auth": routing]))
++}
++let voiceFixtureDestination = LocatedDot(name: "fixture", dotID: "dot-fixture", roomID: "room-fixture",
++    accountID: "account-fixture", userID: "user-fixture", dotMemberID: "dot-user-fixture")
++let voiceFixtureClip = VoiceClip(data: Data("m4a-fixture".utf8), duration: 2, hasSpeech: true)
++
++actor TranscriptionHTTPStub: SignInHTTP {
++    let response: SignInHTTPResponse
++    let hold: Bool
++    let networkFailure: Bool
++    var requests: [URLRequest] = []
++    var continuation: CheckedContinuation<Void, Never>?
++    init(data: Data = Data(#"{"text":" hello "}"#.utf8), status: Int = 200,
++         challenge: Bool = false, hold: Bool = false, networkFailure: Bool = false) {
++        response = SignInHTTPResponse(data: data, status: status, contentType: .json, clientChallenge: challenge)
++        self.hold = hold; self.networkFailure = networkFailure
++    }
++    func captured() -> [URLRequest] { requests }
++    func waiting() -> Bool { continuation != nil }
++    func release() { continuation?.resume(); continuation = nil }
++    func send(_ request: URLRequest) async throws -> (Data, Int) {
++        let result = try await sendWithMetadata(request)
++        return (result.data, result.status)
++    }
++    func sendWithMetadata(_ request: URLRequest) async throws -> SignInHTTPResponse {
++        requests = requests + [request]
++        if hold { await withCheckedContinuation { continuation = $0 } }
++        if networkFailure { throw URLError(.timedOut) }
++        return response
++    }
++}
++
++@MainActor final class DotTranscriptionTests: XCTestCase {
++    func testMultipartUsesFixedEndpointExistingIdentityEnglishAndM4A() async throws {
++        let http = TranscriptionHTTPStub()
++        let account = try voiceFixtureAccount()
++        let text = try await DotTranscription(http: http).transcribe(voiceFixtureClip, account: account,
++            destination: voiceFixtureDestination, now: voiceFixtureNow)
++        XCTAssertEqual(text, "hello")
++        let requests = await http.captured()
++        let request = try XCTUnwrap(requests.first)
++        XCTAssertEqual(requests.count, 1)
++        XCTAssertEqual(request.url?.absoluteString, "https://chatgpt.com/backend-api/transcribe")
++        XCTAssertEqual(request.httpMethod, "POST")
++        XCTAssertEqual(request.timeoutInterval, 60)
++        XCTAssertFalse(request.httpShouldHandleCookies)
++        XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
++        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer \(account.accessToken!)")
++        XCTAssertEqual(request.value(forHTTPHeaderField: "ChatGPT-Account-Id"), "account-fixture")
++        XCTAssertEqual(request.value(forHTTPHeaderField: "originator"), "watch-dot")
++        XCTAssertEqual(request.value(forHTTPHeaderField: "User-Agent"), "WatchDot/1.0")
++        let body = String(decoding: try XCTUnwrap(request.httpBody), as: UTF8.self)
++        XCTAssertTrue(body.contains("name=\"language\"\r\n\r\nen\r\n"))
++        XCTAssertTrue(body.contains("name=\"file\"; filename=\"voice.m4a\"\r\nContent-Type: audio/mp4"))
++        XCTAssertTrue(body.contains("m4a-fixture"))
++        let boundary = try XCTUnwrap(request.value(forHTTPHeaderField: "Content-Type")?.components(separatedBy: "boundary=").last)
++        XCTAssertTrue(body.hasSuffix("--\(boundary)--\r\n"))
++    }
++
++    func testRejectionsAndMalformedResponsesNeverRetryOrLeakBody() async throws {
++        let cases: [(Data, Int, Bool, VoiceInputIssue)] = [
++            (Data("secret-body".utf8), 401, false, .sessionChanged),
++            (Data("secret-body".utf8), 403, false, .transcriptionHTTP(403)),
++            (Data("secret-body".utf8), 429, false, .transcriptionHTTP(429)),
++            (Data("secret-body".utf8), 302, false, .transcriptionHTTP(302)),
++            (Data("secret-body".utf8), 200, true, .challenge),
++            (Data("secret-body".utf8), 200, false, .malformedResponse),
++            (Data(repeating: 32, count: 256_001), 200, false, .malformedResponse),
++            (Data(#"{"text":" \n "}"#.utf8), 200, false, .noSpeech),
++            (try JSONEncoder().encode(["text": String(repeating: "a", count: 8001)]), 200, false, .transcriptTooLong)
++        ]
++        for (body, status, challenge, expected) in cases {
++            let http = TranscriptionHTTPStub(data: body, status: status, challenge: challenge)
++            do {
++                _ = try await DotTranscription(http: http).transcribe(voiceFixtureClip, account: voiceFixtureAccount(),
++                    destination: voiceFixtureDestination, now: voiceFixtureNow)
++                XCTFail("Must reject response")
++            } catch { XCTAssertEqual(error as? VoiceInputIssue, expected) }
++            let requests = await http.captured()
++            XCTAssertEqual(requests.count, 1)
++            XCTAssertFalse(expected.message.contains("secret-body"))
++        }
++    }
++
++    func testInvalidClipsAndChangedRoutingNeverUpload() async throws {
++        let http = TranscriptionHTTPStub()
++        let clips = [VoiceClip(data: Data(), duration: 1, hasSpeech: true),
++                     VoiceClip(data: Data([1]), duration: .nan, hasSpeech: true),
++                     VoiceClip(data: Data([1]), duration: 61, hasSpeech: true),
++                     VoiceClip(data: Data(repeating: 1, count: 2_000_001), duration: 60, hasSpeech: true),
++                     VoiceClip(data: Data([1]), duration: 1, hasSpeech: false)]
++        for clip in clips {
++            do {
++                _ = try await DotTranscription(http: http).transcribe(clip, account: voiceFixtureAccount(),
++                    destination: voiceFixtureDestination, now: voiceFixtureNow)
++                XCTFail("Invalid recording")
++            } catch {}
++        }
++        do {
++            _ = try await DotTranscription(http: http).transcribe(voiceFixtureClip,
++                account: voiceFixtureAccount(accountID: "different-account"),
++                destination: voiceFixtureDestination, now: voiceFixtureNow)
++            XCTFail("Different routing")
++        } catch { XCTAssertEqual(error as? VoiceInputIssue, .sessionChanged) }
++        let requests = await http.captured()
++        XCTAssertTrue(requests.isEmpty)
++    }
++
++    func testCancellationRejectsNonCooperativeHTTPCompletion() async throws {
++        let http = TranscriptionHTTPStub(hold: true)
++        let account = try voiceFixtureAccount()
++        let task = Task {
++            try await DotTranscription(http: http).transcribe(voiceFixtureClip, account: account,
++                destination: voiceFixtureDestination, now: voiceFixtureNow)
++        }
++        for _ in 0..<100 {
++            if await http.waiting() { break }
++            try await Task.sleep(for: .milliseconds(2))
++        }
++        task.cancel(); await http.release()
++        do { _ = try await task.value; XCTFail("Cancelled upload") }
++        catch { XCTAssertTrue(error is CancellationError) }
++    }
++
++    func testNetworkTimeoutIsSafeAndDoesNotRetry() async throws {
++        let http = TranscriptionHTTPStub(networkFailure: true)
++        do {
++            _ = try await DotTranscription(http: http).transcribe(voiceFixtureClip, account: voiceFixtureAccount(),
++                destination: voiceFixtureDestination, now: voiceFixtureNow)
++            XCTFail("Network error")
++        } catch { XCTAssertEqual(error as? VoiceInputIssue, .unavailable) }
++        let requests = await http.captured(); XCTAssertEqual(requests.count, 1)
++    }
++}
+--- /dev/null
++++ b/Tests/WatchDotCoreTests/VoiceConnectionTests.swift
+@@ -0,0 +1,156 @@
++import XCTest
++@testable import WatchDotCore
++
++@MainActor private final class VoiceAccountStore: SignInStore {
++    var record: SignInRecord?
++    init(_ account: SignedInAccount) {
++        var initial = SignInRecord()
++        initial.account = account
++        record = initial
++    }
++    func load() throws -> SignInRecord? { record }
++    func save(_ record: SignInRecord) throws { self.record = record }
++}
++
++private actor VoiceConnectionHTTP: SignInHTTP {
++    let signer: SigningFixture
++    init() throws { signer = try SigningFixture() }
++    func send(_ request: URLRequest) async throws -> (Data, Int) {
++        let path = request.url?.path ?? ""
++        if path == "/.well-known/jwks.json" { return (signer.jwks, 200) }
++        if path == "/oauth/token" {
++            let routing = ["chatgpt_account_id": "account-fixture", "user_id": "user-fixture"]
++            let access = try JSONSerialization.data(withJSONObject: [
++                "exp": voiceFixtureNow.addingTimeInterval(7200).timeIntervalSince1970,
++                "https://api.openai.com/auth": routing
++            ]).base64URL
++            let identity = try signer.token(nonce: "voice-nonce", client: OpenAIOAuthClient.codex, changes: [
++                "sub": "voice-subject", "iat": voiceFixtureNow.addingTimeInterval(-10).timeIntervalSince1970,
++                "exp": voiceFixtureNow.addingTimeInterval(7200).timeIntervalSince1970,
++                "https://api.openai.com/auth": routing
++            ])
++            return (try JSONSerialization.data(withJSONObject: ["access_token": "fixture.\(access).fixture",
++                "id_token": identity, "refresh_token": "rotated-fixture", "expires_in": 7200]), 200)
++        }
++        if path.hasSuffix("/tbo/primary") {
++            return (Data(#"{"selection":{"available":true,"aeon_id":"dot-fixture","messaging_room_id":"room-fixture"}}"#.utf8), 200)
++        }
++        if path.hasSuffix("/rooms/room-fixture") {
++            return (Data(#"{"id":"room-fixture","type":"DM","app_source":"chatgpt:messaging","aeon_id":"dot-fixture","members":[{"account_user_id":"user-fixture"},{"account_user_id":"dot-user-fixture","aeon_id":"dot-fixture"}]}"#.utf8), 200)
++        }
++        return (Data(#"{"items":[]}"#.utf8), 200)
++    }
++}
++
++@MainActor final class VoiceConnectionTests: XCTestCase {
++    private func connected(upload: TranscriptionHTTPStub = TranscriptionHTTPStub(), renewable: Bool = false)
++    async throws -> (ConnectionSession, VoiceAccountStore, URL) {
++        let account = try voiceFixtureAccount()
++        let initial = SignedInAccount(subject: account.subject, clientID: account.clientID, email: nil,
++            expiresAt: account.expiresAt, idToken: account.idToken, accessToken: account.accessToken,
++            refreshToken: renewable ? "refresh-fixture" : nil, authorizationNonce: "voice-nonce")
++        let store = VoiceAccountStore(initial)
++        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
++        let connection = ConnectionSession(store: store, http: try VoiceConnectionHTTP(), now: { voiceFixtureNow },
++                                           chatDirectory: directory, transcriptionHTTP: upload)
++        connection.probeDotAccess()
++        for _ in 0..<100 {
++            if connection.directConversation != nil { break }
++            try await Task.sleep(for: .milliseconds(2))
++        }
++        XCTAssertNotNil(connection.directConversation)
++        return (connection, store, directory)
++    }
++
++    func testVoiceSendPreservesUnrelatedTextDraft() async throws {
++        let (connection, _, directory) = try await connected()
++        defer { try? FileManager.default.removeItem(at: directory) }
++        let conversation = try XCTUnwrap(connection.directConversation)
++        conversation.draft = "Unfinished typed message"
++        let turn = try connection.makeVoiceTurn()
++        XCTAssertTrue(turn.send("A separate voice message"))
++        XCTAssertEqual(conversation.draft, "Unfinished typed message")
++        XCTAssertEqual(conversation.messages.last?.text, "A separate voice message")
++        connection.signOutLocally()
++    }
++
++    func testForegroundAndDemoAreCheckedBeforeCaptureAndAtSend() async throws {
++        let (connection, _, directory) = try await connected()
++        defer { try? FileManager.default.removeItem(at: directory) }
++        let turn = try connection.makeVoiceTurn()
++        connection.enterBackground()
++        XCTAssertThrowsError(try connection.makeVoiceTurn())
++        XCTAssertFalse(turn.send("must not send"))
++        connection.enterForeground()
++        XCTAssertFalse(turn.send("still stale after foreground"))
++        connection.selectDemo(true)
++        XCTAssertThrowsError(try connection.makeVoiceTurn())
++        connection.selectDemo(false)
++        XCTAssertFalse(turn.send("still stale after demo"))
++        connection.signOutLocally()
++    }
++
++    func testSignOutDuringNonCooperativeUploadRejectsTranscript() async throws {
++        let upload = TranscriptionHTTPStub(hold: true)
++        let (connection, _, directory) = try await connected(upload: upload)
++        defer { try? FileManager.default.removeItem(at: directory) }
++        let turn = try connection.makeVoiceTurn()
++        let task = Task { try await turn.transcribe(voiceFixtureClip) }
++        for _ in 0..<100 {
++            if await upload.waiting() { break }
++            try await Task.sleep(for: .milliseconds(2))
++        }
++        connection.signOutLocally()
++        await upload.release()
++        do { _ = try await task.value; XCTFail("Must reject changed session") }
++        catch { XCTAssertEqual(error as? VoiceInputIssue, .sessionChanged) }
++        XCTAssertFalse(turn.send("stale"))
++    }
++
++    func testPersistedAccountChangeFailsBeforeUploadWithoutRefresh() async throws {
++        let upload = TranscriptionHTTPStub()
++        let (connection, store, directory) = try await connected(upload: upload)
++        defer { try? FileManager.default.removeItem(at: directory) }
++        let turn = try connection.makeVoiceTurn()
++        store.record = nil
++        do { _ = try await turn.transcribe(voiceFixtureClip); XCTFail("Account removed") }
++        catch { XCTAssertEqual(error as? VoiceInputIssue, .sessionChanged) }
++        let requests = await upload.captured()
++        XCTAssertTrue(requests.isEmpty)
++        XCTAssertFalse(turn.send("stale"))
++        connection.signOutLocally()
++    }
++
++    func testRoomResetInvalidatesCapturedTurnEvenWhenSameRoomReopens() async throws {
++        let (connection, _, directory) = try await connected()
++        defer { try? FileManager.default.removeItem(at: directory) }
++        let turn = try connection.makeVoiceTurn()
++        let original = connection.directConversation
++        connection.probeDotAccess()
++        for _ in 0..<100 {
++            if connection.directConversation != nil { break }
++            try await Task.sleep(for: .milliseconds(2))
++        }
++        XCTAssertFalse(connection.directConversation === original)
++        XCTAssertFalse(turn.send("stale room binding"))
++        connection.signOutLocally()
++    }
++
++    func testTokenRenewalPreservesBindingAndUsesRenewedCredential() async throws {
++        let upload = TranscriptionHTTPStub()
++        let (connection, _, directory) = try await connected(upload: upload, renewable: true)
++        defer { try? FileManager.default.removeItem(at: directory) }
++        let turn = try connection.makeVoiceTurn()
++        let generation = connection.voiceGeneration
++        let renewed = try await connection.ensureCurrentAccount(force: true)
++        XCTAssertEqual(connection.voiceGeneration, generation)
++        let text = try await turn.transcribe(voiceFixtureClip)
++        XCTAssertEqual(text, "hello")
++        let requests = await upload.captured()
++        XCTAssertEqual(requests.first?.value(forHTTPHeaderField: "Authorization"), "Bearer \(renewed.accessToken!)")
++        XCTAssertTrue(turn.send(text))
++        XCTAssertFalse(turn.send(text))
++        XCTAssertEqual(connection.directConversation?.messages.filter { $0.role == .user }.count, 1)
++        connection.signOutLocally()
++    }
++}
+--- /dev/null
++++ b/Tests/WatchDotCoreTests/VoiceInputSessionTests.swift
+@@ -0,0 +1,155 @@
++import XCTest
++@testable import WatchDotCore
++
++@MainActor private final class VoiceRecorderStub: VoiceRecording {
++    var level: Double = 0.4
++    var recordingIssue: VoiceInputIssue?
++    var clip = VoiceClip(data: Data([1, 2, 3]), duration: 2, hasSpeech: true)
++    var startError: VoiceInputIssue?
++    var holdPermission = false
++    var permission: CheckedContinuation<Void, Never>?
++    var starts = 0
++    var stops = 0
++    var cancels = 0
++    func start() async throws {
++        starts += 1
++        if holdPermission { await withCheckedContinuation { permission = $0 } }
++        if let startError { throw startError }
++    }
++    func stop() throws -> VoiceClip { stops += 1; return clip }
++    func cancel() { cancels += 1 }
++    func release() { permission?.resume(); permission = nil }
++}
++
++@MainActor final class VoiceInputSessionTests: XCTestCase {
++    private func settle(_ predicate: () -> Bool) async throws {
++        for _ in 0..<100 {
++            if predicate() { return }
++            try await Task.sleep(for: .milliseconds(2))
++        }
++        XCTFail("Expected lifecycle transition")
++    }
++
++    func testRepeatedTapsStopAndSendExactlyOnce() async throws {
++        let recorder = VoiceRecorderStub()
++        var sends: [String] = []
++        let session = VoiceInputSession(recorder: recorder, prepare: {
++            VoiceTurn(transcribe: { _ in "  Hello Dot  " }, send: { sends = sends + [$0]; return true })
++        })
++        session.tap(); session.tap()
++        try await settle { session.phase == .listening }
++        session.sampleRecording()
++        XCTAssertEqual(session.level, 0.4)
++        session.tap(); session.tap(); session.tap()
++        try await settle { session.phase == .idle }
++        XCTAssertEqual(recorder.starts, 1)
++        XCTAssertEqual(recorder.stops, 1)
++        XCTAssertEqual(sends, ["Hello Dot"])
++        XCTAssertNil(session.retainedTranscript)
++    }
++
++    func testCancelDuringNonCooperativePermissionDoesNotRecordOrSend() async throws {
++        let recorder = VoiceRecorderStub(); recorder.holdPermission = true
++        var sends = 0
++        let session = VoiceInputSession(recorder: recorder, prepare: {
++            VoiceTurn(transcribe: { _ in "text" }, send: { _ in sends += 1; return true })
++        })
++        session.tap()
++        try await settle { recorder.permission != nil }
++        session.cancel(); recorder.release()
++        try await Task.sleep(for: .milliseconds(10))
++        XCTAssertEqual(session.phase, .idle)
++        XCTAssertEqual(recorder.stops, 0)
++        XCTAssertEqual(sends, 0)
++    }
++
++    func testCancelledNonCooperativeTranscriptionCannotSendIntoNewOperation() async throws {
++        let recorder = VoiceRecorderStub()
++        var continuation: CheckedContinuation<String, Never>?
++        var sends = 0
++        let session = VoiceInputSession(recorder: recorder, prepare: {
++            VoiceTurn(transcribe: { _ in await withCheckedContinuation { continuation = $0 } },
++                      send: { _ in sends += 1; return true })
++        })
++        session.tap(); try await settle { session.phase == .listening }; session.tap()
++        try await settle { continuation != nil }
++        session.cancel(); session.tap()
++        try await settle { session.phase == .listening }
++        continuation?.resume(returning: "stale transcript")
++        try await Task.sleep(for: .milliseconds(10))
++        XCTAssertEqual(session.phase, .listening)
++        XCTAssertEqual(sends, 0)
++        session.cancel()
++    }
++
++    func testSilenceInvalidAudioAndEmptyTranscriptNeverSend() async throws {
++        let clips = [VoiceClip(data: Data([1]), duration: 1, hasSpeech: false),
++                     VoiceClip(data: Data(), duration: 1, hasSpeech: true),
++                     VoiceClip(data: Data([1]), duration: 1, hasSpeech: true)]
++        for clip in clips {
++            let recorder = VoiceRecorderStub(); recorder.clip = clip
++            var sends = 0
++            let session = VoiceInputSession(recorder: recorder, prepare: {
++                VoiceTurn(transcribe: { _ in " \n " }, send: { _ in sends += 1; return true })
++            })
++            session.tap(); try await settle { session.phase == .listening }; session.tap()
++            try await settle { session.phase == .failed }
++            XCTAssertEqual(sends, 0)
++            XCTAssertNil(session.retainedTranscript)
++        }
++    }
++
++    func testPermissionFailureUsesSafeEnglishAndNoUpload() async throws {
++        let recorder = VoiceRecorderStub(); recorder.startError = .permissionDenied
++        var uploaded = false
++        let session = VoiceInputSession(recorder: recorder, prepare: {
++            VoiceTurn(transcribe: { _ in uploaded = true; return "text" }, send: { _ in true })
++        })
++        session.tap(); try await settle { session.phase == .failed }
++        XCTAssertEqual(session.errorMessage, VoiceInputIssue.permissionDenied.message)
++        XCTAssertFalse(uploaded)
++    }
++
++    func testLimitStopsOnceAndInterruptionFailsImmediately() async throws {
++        let recorder = VoiceRecorderStub()
++        var date = Date()
++        var sends = 0
++        let session = VoiceInputSession(recorder: recorder, prepare: {
++            VoiceTurn(transcribe: { _ in "limit" }, send: { _ in sends += 1; return true })
++        }, now: { date })
++        session.tap(); try await settle { session.phase == .listening }
++        date = date.addingTimeInterval(60)
++        session.sampleRecording(); session.sampleRecording()
++        try await settle { session.phase == .idle }
++        XCTAssertEqual(recorder.stops, 1); XCTAssertEqual(sends, 1)
++        session.tap(); try await settle { session.phase == .listening }
++        recorder.recordingIssue = .interrupted
++        session.sampleRecording()
++        XCTAssertEqual(session.phase, .failed)
++        XCTAssertEqual(session.errorMessage, VoiceInputIssue.interrupted.message)
++        XCTAssertEqual(recorder.stops, 1)
++    }
++
++    func testBusySendRetainsReviewTextWithoutRetryAndCancelClearsIt() async throws {
++        let recorder = VoiceRecorderStub()
++        var sends = 0
++        let session = VoiceInputSession(recorder: recorder, prepare: {
++            VoiceTurn(transcribe: { _ in "review this" }, send: { _ in sends += 1; return false })
++        })
++        session.tap(); try await settle { session.phase == .listening }; session.tap()
++        try await settle { session.phase == .failed }
++        XCTAssertEqual(session.retainedTranscript, "review this")
++        XCTAssertEqual(sends, 1)
++        session.cancel()
++        XCTAssertNil(session.retainedTranscript)
++        XCTAssertEqual(sends, 1)
++    }
++
++    func testPreparationFailsBeforeMicrophonePermission() {
++        let recorder = VoiceRecorderStub()
++        let session = VoiceInputSession(recorder: recorder, prepare: { throw VoiceInputIssue.sessionChanged })
++        session.tap()
++        XCTAssertEqual(session.phase, .failed)
++        XCTAssertEqual(recorder.starts, 0)
++    }
++}
+--- /dev/null
++++ b/WatchDotApp/Assets.xcassets/AvatarAtlas.imageset/Contents.json
+@@ -0,0 +1,12 @@
++{
++  "images": [
++    {
++      "filename": "AvatarAtlas.png",
++      "idiom": "universal"
++    }
++  ],
++  "info": {
++    "author": "xcode",
++    "version": 1
++  }
++}
+--- /dev/null
++++ b/WatchDotApp/AvatarConversationView.swift
+@@ -0,0 +1,316 @@
++import SwiftUI
++import WatchKit
++
++struct AvatarConversationView: View {
++    @Environment(\.scenePhase) private var scenePhase
++    @Environment(\.isLuminanceReduced) private var luminanceReduced
++    @ObservedObject var session: ConversationSession
++    @ObservedObject var connection: ConnectionSession
++    @StateObject private var voice: VoiceInputSession
++    @AppStorage("companion.appearance") private var appearanceID = "sprite"
++    @State private var presentation: AvatarPresentation
++    @State private var destination: Destination?
++    @State private var sheetVisible = false
++    @State private var voiceFailure: VoiceFailure?
++    @State private var retryAfterDismiss = false
++    @State private var settingsAfterDismiss = false
++    @State private var isQuiet = false
++    @State private var activityID = UUID()
++    let isSettingsPresented: Bool
++    let showSettings: () -> Void
++
++    private enum Destination: String, Identifiable {
++        case menu, text, voiceError
++        var id: String { rawValue }
++    }
++
++    private struct VoiceFailure {
++        let message: String
++        let transcript: String?
++    }
++
++    init(session: ConversationSession, connection: ConnectionSession,
++         isSettingsPresented: Bool = false, showSettings: @escaping () -> Void) {
++        self.session = session
++        self.connection = connection
++        self.isSettingsPresented = isSettingsPresented
++        self.showSettings = showSettings
++        _presentation = State(initialValue: AvatarPresentation(baselineReplies: session.receivedReplies))
++        _voice = StateObject(wrappedValue: VoiceInputSession(recorder: WatchVoiceRecorder(),
++            prepare: connection.makeVoiceTurn))
++    }
++
++    var body: some View {
++        VStack(spacing: 4) {
++            if !session.isRealConnection {
++                Text("DEMO").font(.caption2).foregroundStyle(.orange)
++            }
++            avatarButton.frame(maxWidth: .infinity, maxHeight: .infinity)
++            if !isQuiet && isContentVisible {
++                Text(appearance.displayName(spriteName: session.transportName))
++                    .font(.footnote.weight(.medium)).lineLimit(1)
++                    .accessibilityIdentifier("avatar.name")
++            }
++            status
++            if captureBusy {
++                Button("Cancel") { voice.cancel(); noteActivity() }
++                    .font(.footnote).buttonStyle(.plain).frame(minHeight: 32)
++                    .accessibilityIdentifier("avatar.cancel")
++            }
++        }
++        .padding(.horizontal, 8)
++        .background(.black)
++        .toolbar {
++            ToolbarItem(placement: .topBarLeading) {
++                Button { noteActivity(); destination = .menu } label: {
++                    Image(systemName: "ellipsis").font(.system(size: 16))
++                }
++                .buttonStyle(.plain)
++                .disabled(captureBusy || session.deliveryState == .sending)
++                .accessibilityLabel("Options")
++                .accessibilityHint("Text input, history, avatar and settings")
++                .accessibilityIdentifier("avatar.menu")
++            }
++        }
++        .sheet(item: $destination, onDismiss: sheetDismissed) { selected in
++            NavigationStack {
++                switch selected {
++                case .menu:
++                    AvatarMenuView(session: session, appearanceID: $appearanceID,
++                        textTitle: voiceFailure?.transcript == nil ? "Type a Message" : textInputTitle,
++                        showTextInput: openTextInput,
++                        showSettings: { settingsAfterDismiss = true; destination = nil },
++                        choseAvatar: { destination = nil })
++                case .text:
++                    ConversationView(session: session, focusInputOnAppear: true).navigationTitle("Message")
++                case .voiceError:
++                    voiceErrorDetails
++                }
++            }
++        }
++        .fullScreenCover(isPresented: replyPresented, onDismiss: presentPendingReply) {
++            ReplyReaderView(replies: presentation.visibleReplies, name: session.transportName,
++                            close: closeReply)
++        }
++        .onChange(of: session.receivedReplies) { _, replies in
++            presentation = presentation.receiving(replies, canPresent: canPresentReply)
++        }
++        .onChange(of: destination) { _, selected in
++            if selected != nil { sheetVisible = true }
++        }
++        .onChange(of: scenePhase) { _, phase in
++            if phase != .active { retryAfterDismiss = false; voice.cancel() }
++            else { noteActivity(); presentPendingReply() }
++        }
++        .onChange(of: luminanceReduced) { _, reduced in
++            if !reduced { presentPendingReply() }
++        }
++        .onChange(of: connection.voiceGeneration) { _, _ in
++            // Background cancellation invalidates voice work, not unread replies.
++            voice.cancel()
++            retryAfterDismiss = false
++            voiceFailure = nil
++        }
++        .onChange(of: session.conversationID) { _, _ in resetPresentation() }
++        .onChange(of: voice.phase) { previous, phase in
++            if isContentVisible {
++                if phase == .listening { WKInterfaceDevice.current().play(.start) }
++                else if phase == .failed { WKInterfaceDevice.current().play(.failure) }
++                else if previous == .listening { WKInterfaceDevice.current().play(.stop) }
++            }
++            if phase == .failed, let message = voice.errorMessage {
++                voiceFailure = VoiceFailure(message: message, transcript: voice.retainedTranscript)
++            }
++            noteActivity()
++            presentPendingReply()
++        }
++        .onChange(of: session.deliveryState) { _, _ in
++            noteActivity()
++            presentPendingReply()
++        }
++        .onChange(of: isSettingsPresented) { _, shown in
++            if !shown { noteActivity(); presentPendingReply() }
++        }
++        .onDisappear {
++            // A reply cover also hides the home. It must not reset the presentation queue.
++            if captureBusy { retryAfterDismiss = false; voice.cancel() }
++        }
++        .task(id: activityID) {
++            guard canBecomeQuiet else { return }
++            do { try await Task.sleep(for: .seconds(4)) } catch { return }
++            guard canBecomeQuiet else { return }
++            isQuiet = true
++        }
++        .task(id: session.conversationID) {
++            if scenePhase == .active, !session.isRealConnection { session.resumeAutomatically() }
++        }
++    }
++
++    private var appearance: CompanionAppearance {
++        CompanionAppearance.resolve(savedID: appearanceID, spriteAvailable: CompanionAvatar.spriteAvailable)
++    }
++
++    private var avatarButton: some View {
++        Button {
++            noteActivity()
++            if session.isRealConnection { voiceFailure = nil; voice.tap() }
++            else { openTextInput() }
++        } label: {
++            CompanionAvatar(appearance: appearance, animation: avatarAnimation, level: voice.level)
++                .contentShape(Rectangle())
++        }
++        .buttonStyle(.plain)
++        .disabled(!isContentVisible || voice.phase == .requesting || voice.phase == .transcribing ||
++                  (voice.phase != .listening && !session.canSend))
++        .accessibilityLabel(voice.phase == .listening ? "Stop recording and send"
++                            : appearance.displayName(spriteName: session.transportName))
++        .accessibilityHint(session.isRealConnection ? "Double-tap to speak" : "Opens local demo text input")
++        .accessibilityIdentifier("avatar.talk")
++    }
++
++    @ViewBuilder private var status: some View {
++        if !isContentVisible {
++            Text("Tap to speak").font(.footnote).foregroundStyle(.secondary)
++        } else if let failure = voiceFailure {
++            Button { destination = .voiceError } label: {
++                Text(failure.message).font(.footnote).foregroundStyle(.orange).lineLimit(2)
++            }
++            .buttonStyle(.plain)
++            .accessibilityLabel("\(failure.message) Show voice input details")
++            .accessibilityIdentifier("avatar.error")
++        } else {
++            Text(statusText).font(.footnote)
++                .foregroundStyle(voice.phase == .listening ? .red : .secondary)
++                .monospacedDigit().fixedSize(horizontal: false, vertical: true)
++                .accessibilityIdentifier("avatar.status")
++        }
++    }
++
++    private var voiceErrorDetails: some View {
++        ScrollView {
++            VStack(alignment: .leading, spacing: 10) {
++                if isContentVisible {
++                    Text(voiceFailure?.message ?? "Voice input is unavailable.")
++                    if let transcript = voiceFailure?.transcript {
++                        Text(transcript).foregroundStyle(.secondary)
++                        Button(session.draft.isEmpty ? "Review transcript" : "Replace draft with transcript") {
++                            session.draft = transcript
++                            openTextInput()
++                        }
++                    }
++                    Button(textInputTitle, action: openTextInput)
++                    Button("Try again") { retryAfterDismiss = true; destination = nil }
++                        .disabled(!session.canSend)
++                } else {
++                    Text("Voice input details hidden")
++                }
++            }
++            .font(.body).padding(.horizontal, 8)
++        }
++        .navigationTitle("Voice input")
++    }
++
++    private var captureBusy: Bool {
++        voice.phase == .requesting || voice.phase == .listening || voice.phase == .transcribing
++    }
++
++    private var isContentVisible: Bool { scenePhase == .active && !luminanceReduced }
++
++    private var canPresentReply: Bool {
++        isContentVisible && !captureBusy && voiceFailure == nil && destination == nil && !sheetVisible &&
++        !isSettingsPresented && !settingsAfterDismiss && !retryAfterDismiss &&
++        session.deliveryState != .sending
++    }
++
++    private var canBecomeQuiet: Bool {
++        isContentVisible && !captureBusy && voiceFailure == nil && destination == nil &&
++        !isSettingsPresented && presentation.visibleReplies.isEmpty &&
++        (session.deliveryState == .idle || session.deliveryState == .answered)
++    }
++
++    private var replyPresented: Binding<Bool> {
++        Binding(get: { !presentation.visibleReplies.isEmpty }, set: { shown in
++            if !shown { closeReply() }
++        })
++    }
++
++    private var statusText: String {
++        switch voice.phase {
++        case .requesting: return "Preparing microphone"
++        case .listening: return "Listening \(Int(min(voice.elapsed, 60))) / 60s"
++        case .transcribing: return "Transcribing"
++        case .failed: return "Voice input unavailable"
++        case .idle: break
++        }
++        switch session.deliveryState {
++        case .sending: return "Sending"
++        case .waiting: return "Waiting for reply"
++        case .waitingForConnection: return "Offline, message pending"
++        case .failed, .cancelled: return "Open history to review delivery"
++        case .idle, .answered: return session.isRealConnection ? "Tap to speak" : "Tap for demo text input"
++        }
++    }
++
++    private var avatarAnimation: AvatarAnimation {
++        if voiceFailure != nil { return .failed }
++        switch voice.phase {
++        case .listening: return .listening
++        case .requesting, .transcribing: return .working
++        case .failed: return .failed
++        case .idle: break
++        }
++        switch session.deliveryState {
++        case .sending, .waiting: return .working
++        case .failed, .waitingForConnection: return .failed
++        case .answered: return isQuiet ? .idle : .replied
++        case .idle, .cancelled: return .idle
++        }
++    }
++
++    private var textInputTitle: String {
++        voiceFailure?.transcript == nil ? "Use text input" : "Discard voice and type"
++    }
++
++    private func noteActivity() { isQuiet = false; activityID = UUID() }
++
++    private func openTextInput() {
++        retryAfterDismiss = false
++        voice.cancel()
++        voiceFailure = nil
++        destination = .text
++        noteActivity()
++    }
++
++    private func sheetDismissed() {
++        sheetVisible = false
++        noteActivity()
++        if settingsAfterDismiss {
++            showSettings()
++            settingsAfterDismiss = false
++        } else if retryAfterDismiss {
++            retryAfterDismiss = false
++            guard isContentVisible, session.isRealConnection, session.canSend else { return }
++            voiceFailure = nil
++            voice.tap()
++        } else { presentPendingReply() }
++    }
++
++    private func presentPendingReply() {
++        presentation = presentation.presentingPending(ifAllowed: canPresentReply)
++    }
++
++    private func closeReply() {
++        presentation = presentation.dismissing()
++        noteActivity()
++    }
++
++    private func resetPresentation() {
++        voice.cancel()
++        voiceFailure = nil
++        retryAfterDismiss = false
++        settingsAfterDismiss = false
++        destination = nil
++        presentation = AvatarPresentation(baselineReplies: session.receivedReplies)
++        noteActivity()
++    }
++}
+--- /dev/null
++++ b/WatchDotApp/AvatarPickerView.swift
+@@ -0,0 +1,57 @@
++import SwiftUI
++
++struct AvatarPickerView: View {
++    @Binding var selection: String
++    let spriteName: String
++    let onChoose: () -> Void
++    @State private var preview: CompanionAppearance = .pebble
++
++    private var selected: CompanionAppearance {
++        .resolve(savedID: selection, spriteAvailable: CompanionAvatar.spriteAvailable)
++    }
++
++    var body: some View {
++        GeometryReader { geometry in
++            TabView(selection: $preview) {
++                ForEach(CompanionAppearance.available(spriteAvailable: CompanionAvatar.spriteAvailable)) { appearance in
++                    page(for: appearance)
++                        .frame(width: geometry.size.width, height: geometry.size.height)
++                        .tag(appearance)
++                }
++            }
++            .tabViewStyle(.verticalPage)
++            .frame(width: geometry.size.width, height: geometry.size.height)
++        }
++        .navigationTitle("")
++        .toolbarTitleDisplayMode(.inline)
++        .onAppear { preview = selected }
++        .accessibilityIdentifier("avatar.picker")
++    }
++
++    private func page(for appearance: CompanionAppearance) -> some View {
++        VStack(spacing: 2) {
++            CompanionAvatar(appearance: appearance, animation: .idle, level: 0)
++                .frame(maxWidth: .infinity, maxHeight: .infinity)
++                .layoutPriority(-1)
++            Text(appearance.displayName(spriteName: spriteName))
++                .font(.footnote.weight(.semibold))
++                .multilineTextAlignment(.center)
++                .fixedSize(horizontal: false, vertical: true)
++            Button {
++                selection = appearance.rawValue
++                onChoose()
++            } label: {
++                Text(appearance == selected ? "Selected" : "Choose")
++                    .frame(maxWidth: .infinity)
++            }
++            .buttonStyle(.borderedProminent)
++            .tint(appearance == selected ? .gray : .accentColor)
++            .accessibilityLabel(appearance == selected
++                ? "Selected, \(appearance.displayName(spriteName: spriteName))"
++                : "Choose \(appearance.displayName(spriteName: spriteName))")
++            .accessibilityIdentifier("avatar.choose.\(appearance.rawValue)")
++        }
++        .frame(maxWidth: .infinity, maxHeight: .infinity)
++        .padding(.horizontal, 12)
++    }
++}
+--- /dev/null
++++ b/WatchDotApp/CompanionAvatar.swift
+@@ -0,0 +1,172 @@
++import SwiftUI
++import WatchKit
++
++struct CompanionAvatar: View {
++    @Environment(\.scenePhase) private var scenePhase
++    @Environment(\.accessibilityReduceMotion) private var reduceMotion
++    @Environment(\.isLuminanceReduced) private var luminanceReduced
++    let appearance: CompanionAppearance
++    let animation: AvatarAnimation
++    let level: Double
++
++    static let spriteAvailable = UIImage(named: "AvatarAtlas") != nil
++
++    var body: some View {
++        Group {
++            if appearance == .sprite && Self.spriteAvailable {
++                SpriteAvatar(animation: animation)
++            } else {
++                OriginalCompanionAvatar(appearance: appearance, animation: animation, level: level)
++            }
++        }
++        .overlay {
++            if animation == .listening && scenePhase == .active && !luminanceReduced {
++                microphoneLevel
++            }
++        }
++        .accessibilityHidden(true)
++    }
++
++    private var microphoneLevel: some View {
++        let meter = level.isFinite ? min(1, max(0, level)) : 0
++        return GeometryReader { geometry in
++            let diameter = max(0, min(geometry.size.width, geometry.size.height) - 6)
++            ZStack {
++                Circle().stroke(.white.opacity(0.15), lineWidth: 3)
++                Circle()
++                    .trim(from: 0, to: reduceMotion ? 1 : meter)
++                    .stroke(.mint.opacity(reduceMotion ? 0.25 + meter * 0.75 : 1),
++                            style: StrokeStyle(lineWidth: 3, lineCap: .round))
++                    .rotationEffect(.degrees(-90))
++            }
++            .frame(width: diameter, height: diameter)
++            .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
++            .animation(nil, value: meter)
++        }
++        .allowsHitTesting(false)
++    }
++}
++
++private struct OriginalCompanionAvatar: View {
++    @Environment(\.scenePhase) private var scenePhase
++    @Environment(\.accessibilityReduceMotion) private var reduceMotion
++    @Environment(\.isLuminanceReduced) private var luminanceReduced
++    let appearance: CompanionAppearance
++    let animation: AvatarAnimation
++    let level: Double
++    @State private var started = Date()
++
++    private var animates: Bool { scenePhase == .active && !reduceMotion && !luminanceReduced }
++    private var tint: Color {
++        switch appearance {
++        case .sprite, .pebble: Color(red: 0.73, green: 0.65, blue: 1)
++        case .orbit: Color(red: 0.40, green: 0.89, blue: 0.81)
++        case .pixel: Color(red: 1, green: 0.74, blue: 0.35)
++        }
++    }
++
++    var body: some View {
++        GeometryReader { geometry in
++            let side = min(geometry.size.width, geometry.size.height) * 0.80
++            TimelineView(.animation(minimumInterval: 0.05, paused: !animates)) { context in
++                let elapsed = animates ? context.date.timeIntervalSince(started) : 0
++                let state = AvatarAnimation.displayed(animation, active: scenePhase == .active,
++                    reduceMotion: reduceMotion, luminanceReduced: luminanceReduced)
++                let meter = state == .listening && level.isFinite ? min(1, max(0, level)) : 0
++                character(side: side, state: state, elapsed: elapsed)
++                    .scaleEffect(1 + meter * 0.06)
++                    .offset(y: animates ? sin(elapsed * 1.8) * 2 : 0)
++                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
++            }
++        }
++        .onChange(of: animation) { _, _ in started = Date() }
++        .onChange(of: animates) { _, _ in started = Date() }
++    }
++
++    private func character(side: CGFloat, state: AvatarAnimation, elapsed: Double) -> some View {
++        ZStack {
++            bodyShape(side: side, elapsed: elapsed)
++            face(side: side, state: state, elapsed: elapsed)
++        }
++        .frame(width: side, height: side)
++    }
++
++    @ViewBuilder
++    private func bodyShape(side: CGFloat, elapsed: Double) -> some View {
++        switch appearance {
++        case .sprite, .pebble:
++            RoundedRectangle(cornerRadius: side * 0.40, style: .continuous)
++                .fill(tint.gradient)
++                .frame(width: side * 0.88, height: side * 0.94)
++                .rotationEffect(.degrees(-7))
++                .overlay(alignment: .topLeading) {
++                    Capsule().fill(.white.opacity(0.30))
++                        .frame(width: side * 0.20, height: side * 0.035)
++                        .rotationEffect(.degrees(-35))
++                        .offset(x: side * 0.12, y: side * 0.12)
++                }
++        case .orbit:
++            Circle().stroke(tint.opacity(0.50), lineWidth: side * 0.025)
++                .frame(width: side * 0.97, height: side * 0.97)
++            Circle().fill(tint.gradient)
++                .frame(width: side * 0.72, height: side * 0.72)
++            Circle().fill(.white)
++                .frame(width: side * 0.10, height: side * 0.10)
++                .offset(x: side * 0.48)
++                .rotationEffect(.degrees(-50 + sin(elapsed) * 12))
++        case .pixel:
++            PixelSilhouette().fill(tint.gradient)
++                .frame(width: side * 0.88, height: side * 0.88)
++            Rectangle().fill(.white.opacity(0.30))
++                .frame(width: side * 0.13, height: side * 0.045)
++                .offset(x: -side * 0.24, y: -side * 0.27)
++        }
++    }
++
++    private func face(side: CGFloat, state: AvatarAnimation, elapsed: Double) -> some View {
++        let blink = animates && elapsed.truncatingRemainder(dividingBy: 4.8) > 4.6
++        let eyeHeight = side * (blink ? 0.025 : 0.115)
++        let glance = state == .working ? sin(elapsed * 2) * side * 0.025 : 0
++        return VStack(spacing: side * 0.10) {
++            HStack(spacing: side * 0.16) {
++                eye(side: side, height: eyeHeight)
++                eye(side: side, height: eyeHeight)
++            }
++            .offset(x: glance)
++            Capsule()
++                .fill(.black.opacity(0.82))
++                .frame(width: side * (state == .replied ? 0.18 : 0.09), height: side * 0.035)
++                .rotationEffect(.degrees(state == .failed ? -14 : 0))
++        }
++        .offset(y: side * 0.025)
++    }
++
++    private func eye(side: CGFloat, height: CGFloat) -> some View {
++        RoundedRectangle(cornerRadius: appearance == .pixel ? 1 : side * 0.04)
++            .fill(.black.opacity(0.88))
++            .frame(width: side * 0.065, height: height)
++    }
++}
++
++private struct PixelSilhouette: Shape {
++    func path(in rect: CGRect) -> Path {
++        let inset = rect.width * 0.14
++        return Path { path in
++            path.move(to: CGPoint(x: inset, y: 0))
++            path.addLines([
++                CGPoint(x: rect.width - inset, y: 0),
++                CGPoint(x: rect.width - inset, y: inset),
++                CGPoint(x: rect.width, y: inset),
++                CGPoint(x: rect.width, y: rect.height - inset),
++                CGPoint(x: rect.width - inset, y: rect.height - inset),
++                CGPoint(x: rect.width - inset, y: rect.height),
++                CGPoint(x: inset, y: rect.height),
++                CGPoint(x: inset, y: rect.height - inset),
++                CGPoint(x: 0, y: rect.height - inset),
++                CGPoint(x: 0, y: inset),
++                CGPoint(x: inset, y: inset)
++            ])
++            path.closeSubpath()
++        }
++    }
++}
+--- /dev/null
++++ b/WatchDotApp/ReplyReaderView.swift
+@@ -0,0 +1,81 @@
++import SwiftUI
++
++struct ReplyReaderView: View {
++    @Environment(\.scenePhase) private var scenePhase
++    @Environment(\.isLuminanceReduced) private var luminanceReduced
++    let replies: [ChatMessage]
++    let name: String
++    let close: () -> Void
++
++    var body: some View {
++        NavigationStack {
++            ScrollView {
++                VStack(alignment: .leading, spacing: 16) {
++                    if scenePhase == .active && !luminanceReduced {
++                        ForEach(replies) { reply in
++                            if reply.id != replies.first?.id { Divider() }
++                            Text(reply.text)
++                                .font(.body)
++                                .frame(maxWidth: .infinity, alignment: .leading)
++                                .fixedSize(horizontal: false, vertical: true)
++                                .accessibilityIdentifier("reply.text")
++                        }
++                    } else {
++                        Text("Reply hidden").foregroundStyle(.secondary)
++                    }
++                    Button("Done", action: close)
++                        .accessibilityIdentifier("reply.done")
++                }
++                .padding(.horizontal, 8)
++            }
++            .navigationTitle(name)
++            .toolbar {
++                ToolbarItem(placement: .topBarLeading) {
++                    Button(action: close) {
++                        Image(systemName: "arrow.uturn.backward")
++                    }
++                    .accessibilityLabel("Back to avatar")
++                    .accessibilityIdentifier("reply.close")
++                }
++            }
++        }
++        .background(.black)
++        .accessibilityIdentifier("reply.reader")
++    }
++}
++
++struct AvatarMenuView: View {
++    @ObservedObject var session: ConversationSession
++    @Binding var appearanceID: String
++    let textTitle: String
++    let showTextInput: () -> Void
++    let showSettings: () -> Void
++    let choseAvatar: () -> Void
++
++    var body: some View {
++        List {
++            Button(action: showTextInput) {
++                Label(textTitle, systemImage: "keyboard")
++            }
++            .accessibilityIdentifier("avatar.menu.text")
++            NavigationLink {
++                ConversationView(session: session).navigationTitle("History")
++            } label: {
++                Label("History", systemImage: "text.bubble")
++            }
++            .accessibilityIdentifier("avatar.menu.history")
++            NavigationLink {
++                AvatarPickerView(selection: $appearanceID, spriteName: session.transportName,
++                                 onChoose: choseAvatar)
++            } label: {
++                Label("Change Avatar", systemImage: "person.crop.circle")
++            }
++            .accessibilityIdentifier("avatar.menu.appearance")
++            Button(action: showSettings) {
++                Label("Settings", systemImage: "gearshape")
++            }
++            .accessibilityIdentifier("avatar.menu.settings")
++        }
++        .navigationTitle("Options")
++    }
++}
+--- /dev/null
++++ b/WatchDotApp/SpriteAvatar.swift
+@@ -0,0 +1,36 @@
++import SwiftUI
++
++struct SpriteAvatar: View {
++    @Environment(\.scenePhase) private var scenePhase
++    @Environment(\.accessibilityReduceMotion) private var reduceMotion
++    @Environment(\.isLuminanceReduced) private var luminanceReduced
++    let animation: AvatarAnimation
++    @State private var started = Date()
++
++    private var animates: Bool { scenePhase == .active && !reduceMotion && !luminanceReduced }
++
++    var body: some View {
++        GeometryReader { geometry in
++            let width = min(geometry.size.width,
++                            geometry.size.height * CGFloat(AvatarAnimation.cellWidth) / CGFloat(AvatarAnimation.cellHeight))
++            let height = width * CGFloat(AvatarAnimation.cellHeight) / CGFloat(AvatarAnimation.cellWidth)
++            TimelineView(.animation(minimumInterval: 0.05, paused: !animates)) { context in
++                let state = AvatarAnimation.displayed(animation, active: scenePhase == .active,
++                    reduceMotion: reduceMotion, luminanceReduced: luminanceReduced)
++                let frame = animates ? state.frame(at: context.date.timeIntervalSince(started)) : 0
++                Image("AvatarAtlas")
++                    .resizable()
++                    .interpolation(.none)
++                    .frame(width: width * CGFloat(AvatarAnimation.columns),
++                           height: height * CGFloat(AvatarAnimation.rows))
++                    .offset(x: -CGFloat(frame) * width, y: -CGFloat(state.row) * height)
++                    .frame(width: width, height: height, alignment: .topLeading)
++                    .clipped()
++                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
++            }
++        }
++        .onChange(of: animation) { _, _ in started = Date() }
++        .onChange(of: animates) { _, _ in started = Date() }
++        .accessibilityHidden(true)
++    }
++}
+--- /dev/null
++++ b/WatchDotApp/WatchVoiceRecorder.swift
+@@ -0,0 +1,314 @@
++import AVFoundation
++import Foundation
++import OSLog
++
++@MainActor
++final class WatchVoiceRecorder: NSObject, VoiceRecording, AVAudioRecorderDelegate {
++    private static let maximumDuration: TimeInterval = 60
++    private static let maximumBytes = 2_000_000
++    private static let minimumDuration: TimeInterval = 0.25
++    private static let directoryPrefix = "watch-dot-voice-"
++    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "WatchDot", category: "VoiceRecorder")
++    private static var activeDirectories: Set<URL> = []
++
++    private struct Meter {
++        let level: Double
++        let sampledAt: TimeInterval
++        let audibleDuration: TimeInterval
++        static let empty = Meter(level: 0, sampledAt: 0, audibleDuration: 0)
++    }
++
++    private let audioSession = AVAudioSession.sharedInstance()
++    private let files = FileManager.default
++    private var generation = UUID()
++    private var requestingPermission = false
++    private var recorder: AVAudioRecorder?
++    private var directory: URL?
++    private var sessionActive = false
++    private var meter = Meter.empty
++    private var meterTask: Task<Void, Never>?
++    private var completed: Result<VoiceClip, VoiceInputIssue>?
++    private var observers: AudioObservers?
++    private var cleanupFailed = false
++
++    var level: Double { meter.level }
++    private(set) var recordingIssue: VoiceInputIssue?
++
++    override init() {
++        super.init()
++        cleanupFailed = !purgeAbandonedRecordings()
++        observers = AudioObservers { [weak self] in
++            Task { @MainActor in self?.interrupt() }
++        }
++    }
++
++    isolated deinit {
++        cancel()
++    }
++
++    func start() async throws {
++        guard recorder == nil, !requestingPermission else {
++            throw VoiceInputIssue.microphoneUnavailable
++        }
++        cancel()
++        cleanupFailed = !purgeAbandonedRecordings() || cleanupFailed
++        guard !cleanupFailed else { throw VoiceInputIssue.microphoneUnavailable }
++        let operation = UUID()
++        generation = operation
++        requestingPermission = true
++        let permitted = await AVAudioApplication.requestRecordPermission()
++        guard generation == operation, !Task.isCancelled else {
++            if generation == operation { cancel() }
++            throw CancellationError()
++        }
++        requestingPermission = false
++        guard permitted else { throw VoiceInputIssue.permissionDenied }
++        do {
++            try recordingStep("category") { try audioSession.setCategory(.record, mode: .default) }
++            try recordingStep("activation") { try audioSession.setActive(true) }
++            sessionActive = true
++            guard audioSession.isInputAvailable else {
++                Self.report("Capture failed: input-unavailable")
++                throw VoiceInputIssue.microphoneUnavailable
++            }
++            try beginRecording()
++        } catch {
++            cancel()
++            throw (error as? VoiceInputIssue) ?? .microphoneUnavailable
++        }
++    }
++
++    func stop() throws -> VoiceClip {
++        if recorder != nil { finishRecording() }
++        guard let result = completed else {
++            cancel()
++            throw VoiceInputIssue.invalidAudio
++        }
++        completed = nil
++        recordingIssue = nil
++        return try result.get()
++    }
++
++    func cancel() {
++        generation = UUID()
++        requestingPermission = false
++        completed = nil
++        recordingIssue = nil
++        let deactivated = discardCapture()
++        cleanupFailed = !removeRecordingDirectory()
++        if cleanupFailed || !deactivated { recordingIssue = .microphoneUnavailable }
++    }
++
++    private func beginRecording() throws {
++        let folder = files.temporaryDirectory.appendingPathComponent(
++            Self.directoryPrefix + UUID().uuidString, isDirectory: true)
++        directory = folder
++        Self.activeDirectories = Self.activeDirectories.union([folder])
++        try recordingStep("create-directory") {
++            try files.createDirectory(at: folder, withIntermediateDirectories: false,
++                attributes: [.protectionKey: FileProtectionType.complete])
++        }
++        let url = folder.appendingPathComponent("speech.m4a")
++        let capture = try recordingStep("create-recorder") {
++            try AVAudioRecorder(url: url, settings: [
++                AVFormatIDKey: kAudioFormatMPEG4AAC,
++                AVSampleRateKey: 16_000,
++                AVNumberOfChannelsKey: 1,
++                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
++            ])
++        }
++        recorder = capture
++        capture.delegate = self
++        capture.isMeteringEnabled = true
++        guard capture.prepareToRecord() else {
++            Self.report("Capture failed: prepare-recorder")
++            throw VoiceInputIssue.microphoneUnavailable
++        }
++        try recordingStep("protect-file") {
++            try files.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path)
++        }
++        guard capture.record(forDuration: Self.maximumDuration) else {
++            Self.report("Capture failed: start-recorder")
++            throw VoiceInputIssue.microphoneUnavailable
++        }
++        Self.logger.notice("Capture started")
++        meterTask = Task { @MainActor [weak self] in
++            while !Task.isCancelled {
++                do { try await Task.sleep(for: .milliseconds(100)) }
++                catch { return }
++                self?.sampleMeter()
++            }
++        }
++    }
++
++    private func sampleMeter() {
++        guard let recorder, recorder.isRecording else { return }
++        recorder.updateMeters()
++        let average = Double(recorder.averagePower(forChannel: 0))
++        let peak = Double(recorder.peakPower(forChannel: 0))
++        let time = recorder.currentTime
++        let interval = max(0, min(0.15, time - meter.sampledAt))
++        // This only rejects near-silence; it does not claim to recognize speech.
++        let audible = average > -55 && peak > -45
++        let normalized = max(0, min(1, (pow(10, average / 20) - 0.001) / 0.999))
++        meter = Meter(level: normalized.isFinite ? normalized : 0, sampledAt: time,
++            audibleDuration: meter.audibleDuration + (audible ? interval : 0))
++    }
++
++    private func finishRecording() {
++        guard let capture = recorder else { return }
++        sampleMeter()
++        let hasSpeech = meter.audibleDuration >= 0.15
++        let url = capture.url
++        let deactivated = discardCapture()
++        do {
++            guard deactivated else { throw VoiceInputIssue.microphoneUnavailable }
++            let clip = try readClip(at: url, hasSpeech: hasSpeech)
++            guard removeRecordingDirectory() else { throw VoiceInputIssue.microphoneUnavailable }
++            completed = .success(clip)
++        } catch {
++            _ = removeRecordingDirectory()
++            let issue = (error as? VoiceInputIssue) ?? .invalidAudio
++            recordingIssue = issue
++            completed = .failure(issue)
++        }
++    }
++
++    private func readClip(at url: URL, hasSpeech: Bool) throws -> VoiceClip {
++        let attributes = try files.attributesOfItem(atPath: url.path)
++        guard attributes[.type] as? FileAttributeType == .typeRegular,
++              let size = attributes[.size] as? NSNumber,
++              size.intValue > 0, size.intValue <= Self.maximumBytes else {
++            throw VoiceInputIssue.invalidAudio
++        }
++        let audio = try AVAudioFile(forReading: url)
++        let duration = Double(audio.length) / audio.processingFormat.sampleRate
++        guard audio.length > 0, duration.isFinite, duration >= Self.minimumDuration,
++              duration <= Self.maximumDuration + 0.25 else {
++            throw VoiceInputIssue.invalidAudio
++        }
++        let handle = try FileHandle(forReadingFrom: url)
++        defer { try? handle.close() }
++        let data = try handle.read(upToCount: Self.maximumBytes + 1) ?? Data()
++        guard data.count == size.intValue, data.count <= Self.maximumBytes else {
++            throw VoiceInputIssue.invalidAudio
++        }
++        // AAC may pad the final packet; the native recording cap still bounds capture to 60 seconds.
++        return VoiceClip(data: data, duration: min(duration, Self.maximumDuration), hasSpeech: hasSpeech)
++    }
++
++    @discardableResult
++    private func discardCapture() -> Bool {
++        meterTask?.cancel()
++        meterTask = nil
++        let capture = recorder
++        recorder = nil
++        capture?.delegate = nil
++        capture?.stop()
++        meter = .empty
++        if sessionActive {
++            do {
++                try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
++                sessionActive = false
++            } catch {
++                logFailure("deactivation", error: error)
++                recordingIssue = .microphoneUnavailable
++                return false
++            }
++        }
++        return true
++    }
++
++    private func interrupt() {
++        guard recorder != nil || requestingPermission else { return }
++        cancel()
++        recordingIssue = .interrupted
++        completed = .failure(.interrupted)
++    }
++
++    private func removeRecordingDirectory() -> Bool {
++        guard let directory else { return true }
++        do {
++            if files.fileExists(atPath: directory.path) { try files.removeItem(at: directory) }
++            Self.activeDirectories = Self.activeDirectories.subtracting([directory])
++            self.directory = nil
++            return true
++        } catch {
++            logFailure("remove-directory", error: error)
++            cleanupFailed = true
++            return false
++        }
++    }
++
++    private func purgeAbandonedRecordings() -> Bool {
++        do {
++            let folders = try files.contentsOfDirectory(at: files.temporaryDirectory,
++                includingPropertiesForKeys: nil)
++            for folder in folders where folder.lastPathComponent.hasPrefix(Self.directoryPrefix)
++                && !Self.activeDirectories.contains(folder) {
++                try files.removeItem(at: folder)
++            }
++            return true
++        } catch {
++            logFailure("purge-directories", error: error)
++            return false
++        }
++    }
++
++    private func recordingStep<T>(_ stage: String, action: () throws -> T) throws -> T {
++        do { return try action() }
++        catch {
++            logFailure(stage, error: error)
++            throw error
++        }
++    }
++
++    private func logFailure(_ stage: String, error: Error) {
++        let failure = error as NSError
++        // Never include localized descriptions, userInfo, paths, or captured content.
++        let knownDomains = [NSOSStatusErrorDomain, NSCocoaErrorDomain, AVFoundationErrorDomain]
++        let domain = knownDomains.contains(failure.domain) ? failure.domain : "other"
++        Self.report("Capture failed: \(stage), domain=\(domain), code=\(failure.code)")
++    }
++
++    private static func report(_ message: String) {
++        logger.error("\(message, privacy: .public)")
++    }
++
++    nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
++        let url = recorder.url
++        Task { @MainActor [weak self] in
++            guard let self, self.recorder?.url == url else { return }
++            if flag { self.finishRecording() }
++            else { self.interrupt() }
++        }
++    }
++
++    nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
++        let url = recorder.url
++        Task { @MainActor [weak self] in
++            guard let self, self.recorder?.url == url else { return }
++            self.interrupt()
++        }
++    }
++}
++
++private final class AudioObservers {
++    private let tokens: [NSObjectProtocol]
++
++    init(onInterruption: @escaping @Sendable () -> Void) {
++        let center = NotificationCenter.default
++        let interruption = center.addObserver(forName: AVAudioSession.interruptionNotification,
++            object: nil, queue: nil) { notification in
++                let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
++                if raw == AVAudioSession.InterruptionType.began.rawValue { onInterruption() }
++            }
++        let reset = center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification,
++            object: nil, queue: nil) { _ in onInterruption() }
++        tokens = [interruption, reset]
++    }
++
++    deinit {
++        for token in tokens { NotificationCenter.default.removeObserver(token) }
++    }
++}
