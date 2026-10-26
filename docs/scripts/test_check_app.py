@@ -27,6 +27,8 @@ class CheckAppTests(unittest.TestCase):
         shutil.copytree(REPO / "docs/config", self.root / "docs/config")
         shutil.copytree(REPO / "docs/translation", self.root / "docs/translation")
         shutil.copytree(REPO / "docs/patches", self.root / "docs/patches")
+        if (REPO / "docs/branding").is_dir():
+            shutil.copytree(REPO / "docs/branding", self.root / "docs/branding")
         shutil.copy(REPO / ".gitignore", self.root / ".gitignore")
         (self.root / check_app.LOCAL_REL).unlink(missing_ok=True)
 

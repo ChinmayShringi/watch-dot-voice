@@ -25,6 +25,7 @@ import sys
 from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import branding_assets
 import feature_patch  # noqa: E402
 
 PINNED_SHA = "0ca53cc050017533e5ed8aef0436fc32e20f2ba1"
@@ -168,6 +169,10 @@ def featured(content, rel, feature):
 
 def check_provenance(app, upstream, translations, insertions, feature=None):
     errors = []
+    try:
+        branding = branding_assets.load(app.parent)
+    except (ValueError, OSError) as error:
+        return [f"branding manifest is invalid: {error}"]
     expected = upstream_files(upstream)
     errors += [f"translation targets a non-upstream file: {rel}" for rel in translations if rel not in expected]
     errors += [f"insertion targets a non-upstream file: {rel}" for rel in insertions if rel not in expected]
@@ -187,6 +192,12 @@ def check_provenance(app, upstream, translations, insertions, feature=None):
             continue
         original = git(upstream, "cat-file", "blob", f"{PINNED_SHA}:{rel}")
         current = local.read_bytes()
+        if rel in branding:
+            try:
+                branding_assets.verify(branding[rel], original, current)
+            except ValueError as error:
+                errors.append(str(error))
+            continue
         if rel == "NOTICE":
             if not current.startswith(original):
                 errors.append("app/NOTICE must keep the upstream text unchanged and only append")
@@ -387,6 +398,9 @@ def feature_delta_errors(base, current, new_files):
     errors += [f"feature adds a disallowed project object {k}" for k in sorted(set(added) - refs - builds)]
     watch = targets_by_name(current).get("WatchDot")
     watch_configs = set(current[watch["buildConfigurationList"]]["buildConfigurations"]) if watch else set()
+    brand_configs = {cfg for target in targets_by_name(base).values()
+                     if target.get("name") in EXPECTED_IDS
+                     for cfg in base[target["buildConfigurationList"]]["buildConfigurations"]}
     placed = {"children": [], "files": []}
     for key in sorted(set(base) & set(current)):
         old, new = base[key], current[key]
@@ -401,7 +415,9 @@ def feature_delta_errors(base, current, new_files):
         if old.get("isa") == "XCBuildConfiguration" and without(old, "buildSettings") == without(new, "buildSettings"):
             before, after = old["buildSettings"], new["buildSettings"]
             changed = {k for k in set(before) | set(after) if before.get(k) != after.get(k)}
-            allowed = FEATURE_SETTINGS | ({MICROPHONE_KEY} if key in watch_configs else set())
+            display_name = "INFOPLIST_KEY_CFBundleDisplayName"
+            brand_keys = {display_name} if key in brand_configs and display_name in before else set()
+            allowed = FEATURE_SETTINGS | brand_keys | ({MICROPHONE_KEY} if key in watch_configs else set())
             if changed <= allowed and all(isinstance(after.get(k), str) and after[k].strip() for k in changed):
                 continue
         errors.append(f"feature changes project object {key} beyond reviewed additions")

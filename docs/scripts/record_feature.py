@@ -4,6 +4,7 @@
 Writes docs/patches/avatar-voice/avatar-voice.patch and docs/patches/avatar-voice.json, pinning the
 patch, the pre-feature project base and every new asset by SHA256. Run only once the sources are
 reviewed; check_app.py then fails on any later drift. Nothing is written if anything is unexpected.
+Original launcher replacements are checked separately against docs/branding/icon.json.
 
 Usage: python3 -I docs/scripts/record_feature.py [--root DIR] [--upstream DIR] [--artwork FILE]
 
@@ -17,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_app  # noqa: E402
+import branding_assets  # noqa: E402
 import feature_patch  # noqa: E402
 
 PATCH_REL = "docs/patches/avatar-voice/avatar-voice.patch"
@@ -30,6 +32,7 @@ def recorded(root, upstream, artwork_rel):
     translations = check_app.load_translations(root)
     insertions = check_app.load_insertions(root)
     known = check_app.upstream_files(upstream)
+    branding = branding_assets.load(root)
     diffs = []
     for rel in sorted(known):
         if rel == "NOTICE":
@@ -42,6 +45,9 @@ def recorded(root, upstream, artwork_rel):
         local = feature_patch.contained(app, rel)
         if not local.is_file():
             raise ValueError(f"feature may not delete upstream file app/{rel}")
+        if rel in branding:
+            branding_assets.verify(branding[rel], before, local.read_bytes())
+            continue
         if local.read_bytes() == before:
             continue  # Unchanged, possibly binary.
         diffs.append(feature_patch.unified_diff(rel, before.decode("utf-8"), local.read_text(encoding="utf-8")))
