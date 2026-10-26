@@ -76,6 +76,9 @@ struct WatchDotApp: App {
     var body: some Scene {
         WindowGroup {
             ChatRootView(connection: connection, demo: session)
+                .onReceive(connection.petCatalog.$generation) { _ in
+                    SpriteFrameStore.shared.purge()
+                }
                 #if DEBUG && targetEnvironment(simulator)
                 .layoutPrivacyPreview(enabled: isLayoutPreview)
                 #endif

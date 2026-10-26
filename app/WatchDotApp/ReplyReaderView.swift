@@ -58,6 +58,7 @@ struct ReplyReaderView: View {
 
 struct AvatarMenuView: View {
     @ObservedObject var session: ConversationSession
+    @ObservedObject var catalog: PetCatalogSession
     @Binding var appearanceID: String
     let textTitle: String
     let showTextInput: () -> Void
@@ -77,7 +78,7 @@ struct AvatarMenuView: View {
             }
             .accessibilityIdentifier("avatar.menu.history")
             NavigationLink {
-                AvatarPickerView(selection: $appearanceID, spriteName: session.transportName,
+                AvatarPickerView(selection: $appearanceID, catalog: catalog, spriteName: session.transportName,
                                  onChoose: choseAvatar)
             } label: {
                 Label("Change Avatar", systemImage: "person.crop.circle")

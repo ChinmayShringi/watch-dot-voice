@@ -44,6 +44,11 @@ This copy is derived from https://github.com/Torcata/watch-dot at commit
   Technical identifiers are unchanged. The original Rillby app and complication icon artwork was
   generated without reference images and is distributed under GPL-3.0-only. Its creation is
   documented in ../docs/branding.md and its replacement hashes in ../docs/branding/icon.json.
+- The Watch app links libwebp (BSD-3-Clause, with Google's WebM patent grant), built from
+  https://github.com/SDWebImage/libwebp-Xcode at revision
+  2b5256c29ff4e20f2a0d5ee863b62b1a22144434, to decode WebP avatar images when the system
+  decoder cannot. Package.swift and the project file pin that revision. The license and
+  patent texts are in ../THIRD_PARTY_NOTICES.md.
 - This NOTICE.
 All other files are byte-identical to that commit. Distributed under the same
 GPL-3.0-only license.

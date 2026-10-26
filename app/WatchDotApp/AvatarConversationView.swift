@@ -7,6 +7,7 @@ struct AvatarConversationView: View {
     @Environment(\.redactionReasons) private var redactionReasons
     @ObservedObject var session: ConversationSession
     @ObservedObject var connection: ConnectionSession
+    @ObservedObject private var catalog: PetCatalogSession
     @StateObject private var voice: VoiceInputSession
     @AppStorage("companion.appearance") private var appearanceID = "sprite"
     @State private var presentation: AvatarPresentation
@@ -34,6 +35,7 @@ struct AvatarConversationView: View {
          isSettingsPresented: Bool = false, showSettings: @escaping () -> Void) {
         self.session = session
         self.connection = connection
+        _catalog = ObservedObject(wrappedValue: connection.petCatalog)
         self.isSettingsPresented = isSettingsPresented
         self.showSettings = showSettings
         _presentation = State(initialValue: AvatarPresentation(baselineReplies: session.receivedReplies))
@@ -47,11 +49,6 @@ struct AvatarConversationView: View {
                 Text("DEMO").font(.caption2).foregroundStyle(.orange)
             }
             avatarButton.frame(maxWidth: .infinity, maxHeight: .infinity)
-            if !isQuiet && isContentVisible {
-                Text(appearance.displayName(spriteName: session.transportName))
-                    .font(.footnote.weight(.medium)).lineLimit(1)
-                    .accessibilityIdentifier("avatar.name")
-            }
             status
             if captureBusy {
                 Button("Cancel") { voice.cancel(); noteActivity() }
@@ -77,7 +74,7 @@ struct AvatarConversationView: View {
             NavigationStack {
                 switch selected {
                 case .menu:
-                    AvatarMenuView(session: session, appearanceID: $appearanceID,
+                    AvatarMenuView(session: session, catalog: catalog, appearanceID: $appearanceID,
                         textTitle: voiceFailure?.transcript == nil ? "Type a Message" : textInputTitle,
                         showTextInput: openTextInput,
                         showSettings: { settingsAfterDismiss = true; destination = nil },
@@ -155,6 +152,9 @@ struct AvatarConversationView: View {
         .task(id: session.conversationID) {
             if scenePhase == .active, !session.isRealConnection { session.resumeAutomatically() }
         }
+        .task(id: appearanceID) {
+            catalog.select(id: AvatarSelection.petID(from: appearanceID))
+        }
     }
 
     private var appearance: CompanionAppearance {
@@ -168,7 +168,11 @@ struct AvatarConversationView: View {
             else if session.isRealConnection { voiceFailure = nil; voice.tap() }
             else { openTextInput() }
         } label: {
-            CompanionAvatar(appearance: appearance, animation: avatarAnimation, level: voice.level)
+            CompanionAvatar(appearance: appearance, animation: avatarAnimation, level: voice.level,
+                atlasURL: AvatarSelection.petID(from: appearanceID).flatMap { catalog.cachedURL(for: $0) },
+                playbackActive: isContentVisible && !sheetVisible && presentation.visibleReplies.isEmpty)
+                .id(catalog.generation)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -278,7 +282,7 @@ struct AvatarConversationView: View {
     }
 
     private var voiceAccessibility: VoiceAccessibility {
-        VoiceAccessibility(phase: voice.phase, name: appearance.displayName(spriteName: session.transportName),
+        VoiceAccessibility(phase: voice.phase, name: session.transportName,
             elapsed: voice.elapsed, recoveryReason: session.canSend ? nil : recovery?.reason,
             isRealConnection: session.isRealConnection)
     }

@@ -8,18 +8,21 @@ struct CompanionAvatar: View {
     let appearance: CompanionAppearance
     let animation: AvatarAnimation
     let level: Double
+    var atlasURL: URL? = nil
+    var playbackActive = true
 
     static let spriteAvailable = UIImage(named: "AvatarAtlas") != nil
 
     var body: some View {
         Group {
-            if appearance == .sprite && Self.spriteAvailable {
-                SpriteAvatar(animation: animation)
+            if atlasURL != nil || (appearance == .sprite && Self.spriteAvailable) {
+                SpriteAvatar(animation: animation, atlasURL: atlasURL, playbackActive: playbackActive)
             } else {
-                OriginalCompanionAvatar(appearance: appearance, animation: animation, level: level)
+                OriginalCompanionAvatar(appearance: appearance, animation: animation, level: level,
+                    playbackActive: playbackActive)
             }
         }
-        .overlay {
+        .background {
             if animation == .listening && scenePhase == .active && !luminanceReduced {
                 microphoneLevel
             }
@@ -54,9 +57,10 @@ private struct OriginalCompanionAvatar: View {
     let appearance: CompanionAppearance
     let animation: AvatarAnimation
     let level: Double
+    let playbackActive: Bool
     @State private var started = Date()
 
-    private var animates: Bool { scenePhase == .active && !reduceMotion && !luminanceReduced }
+    private var animates: Bool { playbackActive && scenePhase == .active && !reduceMotion && !luminanceReduced }
     private var tint: Color {
         switch appearance {
         case .sprite, .pebble: Color(red: 0.73, green: 0.65, blue: 1)
@@ -67,15 +71,16 @@ private struct OriginalCompanionAvatar: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let side = min(geometry.size.width, geometry.size.height) * 0.80
+            let side = AvatarLayout.glyphSide(width: geometry.size.width, height: geometry.size.height,
+                appearance: appearance)
             TimelineView(.animation(minimumInterval: 0.05, paused: !animates)) { context in
                 let elapsed = animates ? context.date.timeIntervalSince(started) : 0
                 let state = AvatarAnimation.displayed(animation, active: scenePhase == .active,
                     reduceMotion: reduceMotion, luminanceReduced: luminanceReduced)
                 let meter = state == .listening && level.isFinite ? min(1, max(0, level)) : 0
                 character(side: side, state: state, elapsed: elapsed)
-                    .scaleEffect(1 + meter * 0.06)
-                    .offset(y: animates ? sin(elapsed * 1.8) * 2 : 0)
+                    .scaleEffect(1 + meter * AvatarLayout.listeningGrowth)
+                    .offset(y: animates ? sin(elapsed * 1.8) * AvatarLayout.bobAmplitude : 0)
                     .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
             }
         }

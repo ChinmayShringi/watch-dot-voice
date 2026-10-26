@@ -1,3 +1,19 @@
+--- a/Package.swift
++++ b/Package.swift
+@@ -5,8 +5,12 @@
+     name: "WatchDot",
+     platforms: [.macOS(.v13), .iOS(.v17), .watchOS(.v10)],
+     products: [.library(name: "WatchDotCore", targets: ["WatchDotCore"])],
++    dependencies: [
++        .package(url: "https://github.com/SDWebImage/libwebp-Xcode.git",
++                 revision: "2b5256c29ff4e20f2a0d5ee863b62b1a22144434")
++    ],
+     targets: [
+-        .target(name: "WatchDotCore"),
++        .target(name: "WatchDotCore", dependencies: [.product(name: "libwebp", package: "libwebp-Xcode")]),
+         .testTarget(name: "WatchDotCoreTests", dependencies: ["WatchDotCore"])
+     ]
+ )
 --- a/PhoneDotApp/PhoneConnectionSession.swift
 +++ b/PhoneDotApp/PhoneConnectionSession.swift
 @@ -4,7 +4,7 @@
@@ -163,18 +179,19 @@
          case .signedOut: "Signed out"
          case .connecting: "Connecting to iPhone…"
          case .awaitingConsent: "Authorize on your iPhone"
-@@ -33,8 +33,10 @@
+@@ -33,8 +33,11 @@
      // Demo is opt-in for this app run. Missing/expired authentication never selects it.
      @Published public private(set) var demoEnabled = false
      @Published public private(set) var isRenewingSession = false
 +    @Published public private(set) var voiceGeneration = UUID()
++    public let petCatalog: PetCatalogSession
  
      public func selectDemo(_ enabled: Bool) {
 +        if demoEnabled != enabled { voiceGeneration = UUID() }
          if enabled { directConversation?.suspend() }
          demoEnabled = enabled
      }
-@@ -59,13 +61,14 @@
+@@ -59,13 +62,14 @@
      private var activeChatKey: String?
      private let chatDirectory: URL?
      private let http: any SignInHTTP
@@ -190,13 +207,16 @@
          if canResume { return "Resume authorization" }
          if canRenewSession { return "Renew session" }
          if phase == .expired { return "Authorize again" }
-@@ -91,10 +94,12 @@
+@@ -91,15 +95,24 @@
      public init(store: any SignInStore, http: any SignInHTTP = SecureSignInHTTP(),
                  now: @escaping () -> Date = Date.init,
                  chatDirectory: URL? = nil, backgroundReceiver: (any BackgroundChatReceiving)? = nil,
 -                companion: (any WatchSignInLink)? = nil) {
 +                companion: (any WatchSignInLink)? = nil,
 +                transcriptionHTTP: any SignInHTTP = SecureSignInHTTP(requestTimeout: 60, resourceTimeout: 60)) {
++        let cacheRoot = (chatDirectory ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0])
++            .appendingPathComponent("PetCatalog", isDirectory: true)
++        petCatalog = PetCatalogSession(directory: cacheRoot)
          self.store = store
          self.companion = companion
          self.http = http
@@ -204,7 +224,32 @@
          self.chatDirectory = chatDirectory
          self.backgroundReceiver = backgroundReceiver
          service = SignInService(http: http)
-@@ -166,6 +171,7 @@
+         dotProbe = DotAccessProbe(http: http)
+         self.now = now
++        petCatalog.configure { [weak self] in
++            guard let self else { throw PetCatalogError.signedOut }
++            return try await self.fetchPetCatalog()
++        }
+         refresh()
+     }
+ 
+@@ -113,6 +126,7 @@
+                 resetDotProbe()
+             }
+             record = loaded
++            synchronizePetScope()
+             storageAvailable = true
+             if let account = record.account {
+                 accountLabel = account.email ?? "ChatGPT account"
+@@ -122,6 +136,7 @@
+                 phase = (record.phoneRequest?.expiresAt ?? .distantPast) > now() ? .awaitingConsent : (isConfigured ? .signedOut : .setupRequired)
+             }
+         } catch {
++            petCatalog.hideForUnavailableIdentity()
+             resetDotProbe()
+             storageAvailable = false
+             phase = .failed(SignInError.storage.message)
+@@ -166,6 +181,7 @@
      }
  
      public func cancel() {
@@ -212,7 +257,15 @@
          phoneValidationID = nil
          if let request = record.phoneRequest {
              do {
-@@ -206,6 +212,7 @@
+@@ -179,6 +195,7 @@
+     }
+ 
+     public func signOutLocally() {
++        petCatalog.bind(to: nil)
+         renewalID = nil
+         renewalTask?.cancel(); renewalTask = nil
+         isRenewingSession = false
+@@ -206,6 +223,7 @@
          guard record.account == nil || record.account!.expiresAt <= now() || !canRenewSession else {
              throw SignInError.denied // A different account requires an explicit local sign-out.
          }
@@ -220,7 +273,15 @@
          let request = try PhoneAuthorizationRequest(installationID: record.hostID,
              expectedSubject: record.account?.subject, now: now())
          var updated = record
-@@ -274,7 +281,7 @@
+@@ -252,6 +270,7 @@
+                 // Tokens and receipt are one atomic Keychain record; never acknowledge a failed save.
+                 try store.save(updated)
+                 record = updated
++                synchronizePetScope()
+                 phoneValidationID = nil
+                 resetDotProbe()
+                 accountLabel = transfer.account.email ?? "ChatGPT account"
+@@ -274,7 +293,7 @@
  
      public func companionRequestFailed() {
          if record.phoneRequest != nil {
@@ -229,7 +290,7 @@
          }
      }
  
-@@ -326,6 +333,7 @@
+@@ -326,6 +345,7 @@
      }
  
      private func resetDotProbe() {
@@ -237,15 +298,24 @@
          backgroundTransition?.cancel()
          if activeChatKey != nil, let backgroundReceiver { Task { await backgroundReceiver.stop() } }
          directConversation?.suspend()
-@@ -337,6 +345,7 @@
+@@ -337,6 +357,8 @@
      }
  
      public func enterBackground() {
++        petCatalog.suspend()
 +        voiceGeneration = UUID()
          isForeground = false
          pause()
          directConversation?.suspend()
-@@ -405,6 +414,38 @@
+@@ -349,6 +371,7 @@
+ 
+     public func enterForeground() {
+         isForeground = true
++        petCatalog.resume()
+         backgroundTransition?.cancel()
+         backgroundTransition = Task { [weak self] in
+             guard let self else { return }
+@@ -405,6 +428,38 @@
          return account
      }
  
@@ -284,7 +354,23 @@
      /// One in-flight refresh shared by foreground sync, sends and reply reads. No periodic timer.
      func ensureCurrentAccount(force: Bool = false) async throws -> SignedInAccount {
          if let renewalTask { return try await renewalTask.value }
-@@ -464,6 +505,7 @@
+@@ -413,6 +468,7 @@
+             do { try store.save(updated) }
+             catch { phase = .failed(SignInError.storage.message); throw SignInError.storage }
+             record = updated; self.unsavedRenewal = nil; storageAvailable = true
++            synchronizePetScope()
+         }
+         guard let account = record.account else { throw SignInError.expired }
+         if (record.phoneRequest?.expiresAt ?? .distantPast) > now() {
+@@ -455,6 +511,7 @@
+                 do { try self.store.save(updated) }
+                 catch { throw SignInError.storage }
+                 self.record = updated; self.unsavedRenewal = nil; self.storageAvailable = true
++                self.synchronizePetScope()
+                 self.renewalRetryAfter = nil
+                 self.accountLabel = renewed.email ?? "ChatGPT account"
+                 self.phase = .signedIn
+@@ -464,6 +521,7 @@
                  if let reason = error as? SignInError {
                      switch reason {
                      case .refreshRejected, .identity:
@@ -292,6 +378,64 @@
                          let revoked = SignedInAccount(subject: account.subject, clientID: account.clientID,
                              email: account.email, expiresAt: .distantPast, idToken: account.idToken,
                              accessToken: nil, authorizationNonce: account.authorizationNonce)
+@@ -472,6 +530,7 @@
+                         do { try self.store.save(updated); self.unsavedRenewal = nil }
+                         catch { self.storageAvailable = false }
+                         self.record = updated
++                        self.synchronizePetScope()
+                         self.phase = .expired
+                     case .storage:
+                         self.storageAvailable = false
+@@ -494,3 +553,49 @@
+     }
+ 
+ }
++
++extension ConnectionSession {
++    private func petScope(for account: SignedInAccount?) -> String? {
++        guard let account, let token = account.accessToken,
++              let identity = try? dotProbe.routingIdentity(token, account: account, now: .distantPast) else { return nil }
++        // Expiry prevents network access, but a verified identity may retain its offline avatar.
++        return PetCatalogItem.digest([account.subject, identity.accountID, identity.userID])
++    }
++
++    private func synchronizePetScope() {
++        if record.account == nil { petCatalog.bind(to: nil) }
++        else if let scope = petScope(for: record.account) { petCatalog.bind(to: scope) }
++        else { petCatalog.hideForUnavailableIdentity() }
++    }
++
++    public func fetchPetCatalog() async throws -> [PetCatalogItem] {
++        guard isForeground, !demoEnabled, let expectedScope = petCatalog.scope else { throw PetCatalogError.signedOut }
++        let generation = petCatalog.generation
++        for attempt in 0...1 {
++            let account = try await ensureCurrentAccount(force: attempt == 1)
++            synchronizePetScope()
++            try validatePetIdentity(scope: expectedScope, generation: generation)
++            guard let token = account.accessToken else { throw PetCatalogError.signedOut }
++            let identity = try dotProbe.routingIdentity(token, account: account, now: now())
++            let credentials = PetCatalogCredentials(accessToken: token, accountID: identity.accountID, scope: expectedScope)
++            do {
++                return try await PetCatalogClient(http: http).fetch(credentials: credentials) { [weak self] in
++                    guard let self else { throw PetCatalogError.signedOut }
++                    try self.validatePetIdentity(scope: expectedScope, generation: generation)
++                }
++            } catch PetCatalogError.http(let status) where status == 401 && attempt == 0 {
++                try validatePetIdentity(scope: expectedScope, generation: generation)
++            }
++        }
++        throw PetCatalogError.unavailable
++    }
++
++    private func validatePetIdentity(scope: String, generation: UUID) throws {
++        try Task.checkCancellation()
++        guard isForeground, !demoEnabled, petCatalog.scope == scope, petCatalog.generation == generation,
++              phase == .signedIn, petScope(for: record.account) == scope,
++              let stored = try store.load()?.account, petScope(for: stored) == scope else {
++            throw PetCatalogError.identityChanged
++        }
++    }
++}
 --- a/Sources/WatchDotCore/Conversation.swift
 +++ b/Sources/WatchDotCore/Conversation.swift
 @@ -188,6 +188,8 @@
@@ -604,7 +748,7 @@
          XCTAssertTrue(calls.allSatisfy { $0.httpMethod == "GET" })
 --- a/WatchDot.xcodeproj/project.pbxproj
 +++ b/WatchDot.xcodeproj/project.pbxproj
-@@ -33,6 +33,21 @@
+@@ -33,6 +33,30 @@
  		D0000000000000000000006F = {isa = PBXBuildFile; fileRef = B00000000000000000000003; };
  		D00000000000000000000070 = {isa = PBXBuildFile; fileRef = A0000000000000000000000A; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
  		D00000000000000000000071 = {isa = PBXBuildFile; fileRef = D0000000000000000000000A; };
@@ -613,6 +757,7 @@
 +		F20000000000000000000003 /* AvatarAnimation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000003 /* AvatarAnimation.swift */; };
 +		F20000000000000000000004 /* WatchVoiceRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000004 /* WatchVoiceRecorder.swift */; };
 +		F20000000000000000000005 /* SpriteAvatar.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000005 /* SpriteAvatar.swift */; };
++		F20000000000000000000014 /* SpriteFrameStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000014 /* SpriteFrameStore.swift */; };
 +		F20000000000000000000006 /* AvatarConversationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000006 /* AvatarConversationView.swift */; };
 +		F20000000000000000000008 /* AvatarPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000008 /* AvatarPresentation.swift */; };
 +		F20000000000000000000009 /* CompanionAppearance.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000009 /* CompanionAppearance.swift */; };
@@ -623,10 +768,18 @@
 +		F2000000000000000000000E /* SensitiveContentPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000E /* SensitiveContentPolicy.swift */; };
 +		F2000000000000000000000F /* HistoryScrollPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000F /* HistoryScrollPolicy.swift */; };
 +		F20000000000000000000010 /* HomeInteraction.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000010 /* HomeInteraction.swift */; };
++		F20000000000000000000018 /* PetWebPDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000018 /* PetWebPDecoder.swift */; };
++		F20000000000000000000017 /* PetImageDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000017 /* PetImageDownloader.swift */; };
++		F20000000000000000000016 /* PetCatalogSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000016 /* PetCatalogSession.swift */; };
++		F20000000000000000000015 /* PetCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000015 /* PetCatalog.swift */; };
++		F20000000000000000000013 /* SpriteAtlasLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000013 /* SpriteAtlasLayout.swift */; };
++		F20000000000000000000012 /* AvatarSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000012 /* AvatarSelection.swift */; };
++		F20000000000000000000011 /* AvatarLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000011 /* AvatarLayout.swift */; };
++		F30000000000000000000003 /* libwebp in Frameworks */ = {isa = PBXBuildFile; productRef = F30000000000000000000002 /* libwebp */; };
  /* End PBXBuildFile section */
  
  /* Begin PBXFileReference section */
-@@ -60,6 +75,21 @@
+@@ -60,6 +84,29 @@
  		D00000000000000000000009 = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WatchDotPhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
  		D0000000000000000000000A = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
  		E00000000000000000000001 /* WatchDot.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = WatchDot.xcconfig; path = ../docs/config/WatchDot.xcconfig; sourceTree = SOURCE_ROOT; };
@@ -635,6 +788,7 @@
 +		F10000000000000000000003 /* AvatarAnimation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarAnimation.swift; sourceTree = "<group>"; };
 +		F10000000000000000000004 /* WatchVoiceRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchVoiceRecorder.swift; sourceTree = "<group>"; };
 +		F10000000000000000000005 /* SpriteAvatar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpriteAvatar.swift; sourceTree = "<group>"; };
++		F10000000000000000000014 /* SpriteFrameStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpriteFrameStore.swift; sourceTree = "<group>"; };
 +		F10000000000000000000006 /* AvatarConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarConversationView.swift; sourceTree = "<group>"; };
 +		F10000000000000000000008 /* AvatarPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarPresentation.swift; sourceTree = "<group>"; };
 +		F10000000000000000000009 /* CompanionAppearance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionAppearance.swift; sourceTree = "<group>"; };
@@ -645,10 +799,25 @@
 +		F1000000000000000000000E /* SensitiveContentPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SensitiveContentPolicy.swift; sourceTree = "<group>"; };
 +		F1000000000000000000000F /* HistoryScrollPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryScrollPolicy.swift; sourceTree = "<group>"; };
 +		F10000000000000000000010 /* HomeInteraction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeInteraction.swift; sourceTree = "<group>"; };
++		F10000000000000000000018 /* PetWebPDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PetWebPDecoder.swift; sourceTree = "<group>"; };
++		F10000000000000000000017 /* PetImageDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PetImageDownloader.swift; sourceTree = "<group>"; };
++		F10000000000000000000016 /* PetCatalogSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PetCatalogSession.swift; sourceTree = "<group>"; };
++		F10000000000000000000015 /* PetCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PetCatalog.swift; sourceTree = "<group>"; };
++		F10000000000000000000013 /* SpriteAtlasLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpriteAtlasLayout.swift; sourceTree = "<group>"; };
++		F10000000000000000000012 /* AvatarSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarSelection.swift; sourceTree = "<group>"; };
++		F10000000000000000000011 /* AvatarLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AvatarLayout.swift; sourceTree = "<group>"; };
  /* End PBXFileReference section */
  
  /* Begin PBXFrameworksBuildPhase section */
-@@ -100,6 +130,13 @@
+@@ -67,6 +114,7 @@
+ 			isa = PBXFrameworksBuildPhase;
+ 			buildActionMask = 2147483647;
+ 			files = (
++				F30000000000000000000003 /* libwebp in Frameworks */,
+ 			);
+ 			runOnlyForDeploymentPostprocessing = 0;
+ 		};
+@@ -100,6 +148,14 @@
  		A0000000000000000000000E /* WatchDotApp */ = {
  			isa = PBXGroup;
  			children = (
@@ -658,17 +827,25 @@
 +				F1000000000000000000000D /* SensitiveContent.swift */,
 +				F10000000000000000000006 /* AvatarConversationView.swift */,
 +				F10000000000000000000005 /* SpriteAvatar.swift */,
++				F10000000000000000000014 /* SpriteFrameStore.swift */,
 +				F10000000000000000000004 /* WatchVoiceRecorder.swift */,
  				A0000000000000000000000B /* WatchDotApp.swift */,
  				B00000000000000000000007 /* WatchBackgroundReceiver.swift */,
  				A0000000000000000000001A /* Assets.xcassets */,
-@@ -110,6 +147,14 @@
+@@ -110,6 +166,21 @@
  		A0000000000000000000000F /* Sources/WatchDotCore */ = {
  			isa = PBXGroup;
  			children = (
 +				F10000000000000000000008 /* AvatarPresentation.swift */,
 +				F10000000000000000000009 /* CompanionAppearance.swift */,
 +				F10000000000000000000010 /* HomeInteraction.swift */,
++				F10000000000000000000018 /* PetWebPDecoder.swift */,
++				F10000000000000000000017 /* PetImageDownloader.swift */,
++				F10000000000000000000016 /* PetCatalogSession.swift */,
++				F10000000000000000000015 /* PetCatalog.swift */,
++				F10000000000000000000013 /* SpriteAtlasLayout.swift */,
++				F10000000000000000000012 /* AvatarSelection.swift */,
++				F10000000000000000000011 /* AvatarLayout.swift */,
 +				F1000000000000000000000F /* HistoryScrollPolicy.swift */,
 +				F1000000000000000000000E /* SensitiveContentPolicy.swift */,
 +				F10000000000000000000003 /* AvatarAnimation.swift */,
@@ -677,7 +854,23 @@
  				A0000000000000000000000C /* Conversation.swift */,
  				B00000000000000000000001 /* Authentication.swift */,
  				B00000000000000000000002 /* ConnectionSession.swift */,
-@@ -221,6 +266,21 @@
+@@ -142,6 +213,7 @@
+ 			buildRules = (
+ 			);
+ 			dependencies = (C0000000000000000000000F, );
++			packageProductDependencies = (F30000000000000000000002 /* libwebp */, );
+ 			name = WatchDot;
+ 			productName = WatchDot;
+ 			productReference = A0000000000000000000000A /* WatchDot.app */;
+@@ -191,6 +263,7 @@
+ 				Base,
+ 				es,
+ 			);
++			packageReferences = (F30000000000000000000001 /* libwebp-Xcode */, );
+ 			mainGroup = A00000000000000000000004;
+ 			productRefGroup = A00000000000000000000005 /* Products */;
+ 			projectDirPath = "";
+@@ -221,6 +294,29 @@
  			isa = PBXSourcesBuildPhase;
  			buildActionMask = 2147483647;
  			files = (
@@ -687,11 +880,19 @@
 +				F2000000000000000000000B /* AvatarPickerView.swift in Sources */,
 +				F2000000000000000000000C /* ReplyReaderView.swift in Sources */,
 +				F20000000000000000000010 /* HomeInteraction.swift in Sources */,
++				F20000000000000000000018 /* PetWebPDecoder.swift in Sources */,
++				F20000000000000000000017 /* PetImageDownloader.swift in Sources */,
++				F20000000000000000000016 /* PetCatalogSession.swift in Sources */,
++				F20000000000000000000015 /* PetCatalog.swift in Sources */,
++				F20000000000000000000013 /* SpriteAtlasLayout.swift in Sources */,
++				F20000000000000000000012 /* AvatarSelection.swift in Sources */,
++				F20000000000000000000011 /* AvatarLayout.swift in Sources */,
 +				F2000000000000000000000F /* HistoryScrollPolicy.swift in Sources */,
 +				F2000000000000000000000E /* SensitiveContentPolicy.swift in Sources */,
 +				F2000000000000000000000D /* SensitiveContent.swift in Sources */,
 +				F20000000000000000000006 /* AvatarConversationView.swift in Sources */,
 +				F20000000000000000000005 /* SpriteAvatar.swift in Sources */,
++				F20000000000000000000014 /* SpriteFrameStore.swift in Sources */,
 +				F20000000000000000000004 /* WatchVoiceRecorder.swift in Sources */,
 +				F20000000000000000000003 /* AvatarAnimation.swift in Sources */,
 +				F20000000000000000000002 /* VoiceInputSession.swift in Sources */,
@@ -699,12 +900,33 @@
  				A00000000000000000000010 /* WatchDotApp.swift in Sources */,
  				A00000000000000000000011 /* Conversation.swift in Sources */,
  				B00000000000000000000011 /* Authentication.swift in Sources */,
-@@ -247,11 +307,11 @@
+@@ -241,17 +337,32 @@
+ 		D0000000000000000000000C = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (D00000000000000000000065, D00000000000000000000066, D00000000000000000000067, D00000000000000000000068, D00000000000000000000069, D0000000000000000000006A, D0000000000000000000006E, D0000000000000000000006F, ); runOnlyForDeploymentPostprocessing = 0; };
+ /* End PBXSourcesBuildPhase section */
+ 
++/* Begin XCRemoteSwiftPackageReference section */
++        F30000000000000000000001 /* libwebp-Xcode */ = {
++            isa = XCRemoteSwiftPackageReference;
++            repositoryURL = "https://github.com/SDWebImage/libwebp-Xcode.git";
++            requirement = { kind = revision; revision = 2b5256c29ff4e20f2a0d5ee863b62b1a22144434; };
++        };
++/* End XCRemoteSwiftPackageReference section */
++/* Begin XCSwiftPackageProductDependency section */
++        F30000000000000000000002 /* libwebp */ = {
++            isa = XCSwiftPackageProductDependency;
++            package = F30000000000000000000001 /* libwebp-Xcode */;
++            productName = libwebp;
++        };
++/* End XCSwiftPackageProductDependency section */
++
+ /* Begin XCBuildConfiguration section */
+ 		A00000000000000000000013 /* Debug */ = {
+ 			isa = XCBuildConfiguration;
  			buildSettings = {
  				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
  				CODE_SIGNING_ALLOWED = YES;
 -                CURRENT_PROJECT_VERSION = 4;
-+                CURRENT_PROJECT_VERSION = 8;
++                CURRENT_PROJECT_VERSION = 9;
                  MARKETING_VERSION = 1.1;
  				GENERATE_INFOPLIST_FILE = YES;
  				INFOPLIST_FILE = WatchDotApp/Info.plist;
@@ -713,12 +935,12 @@
  				INFOPLIST_KEY_WKApplication = YES;
  				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "$(WATCHDOT_BUNDLE_PREFIX)";
                  INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = NO;
-@@ -272,11 +332,11 @@
+@@ -272,11 +383,11 @@
  			buildSettings = {
  				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
  				CODE_SIGNING_ALLOWED = YES;
 -                CURRENT_PROJECT_VERSION = 4;
-+                CURRENT_PROJECT_VERSION = 8;
++                CURRENT_PROJECT_VERSION = 9;
                  MARKETING_VERSION = 1.1;
  				GENERATE_INFOPLIST_FILE = YES;
  				INFOPLIST_FILE = WatchDotApp/Info.plist;
@@ -727,12 +949,12 @@
  				INFOPLIST_KEY_WKApplication = YES;
  				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "$(WATCHDOT_BUNDLE_PREFIX)";
                  INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = NO;
-@@ -312,11 +372,11 @@
+@@ -312,11 +423,11 @@
  		};
  		C00000000000000000000011 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES;
                  CODE_SIGN_STYLE = Automatic;
 -                CURRENT_PROJECT_VERSION = 4;
-+                CURRENT_PROJECT_VERSION = 8;
++                CURRENT_PROJECT_VERSION = 9;
                  MARKETING_VERSION = 1.1;
                  GENERATE_INFOPLIST_FILE = YES;
                  INFOPLIST_FILE = WatchDotComplication/Info.plist;
@@ -741,12 +963,12 @@
                  PRODUCT_BUNDLE_IDENTIFIER = "$(WATCHDOT_BUNDLE_PREFIX).watchkitapp.launcher";
                  PRODUCT_NAME = "$(TARGET_NAME)";
                  SDKROOT = watchos;
-@@ -327,11 +387,11 @@
+@@ -327,11 +438,11 @@
                  WATCHOS_DEPLOYMENT_TARGET = 10.0;}; name = Debug; };
  		C00000000000000000000012 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES;
                  CODE_SIGN_STYLE = Automatic;
 -                CURRENT_PROJECT_VERSION = 4;
-+                CURRENT_PROJECT_VERSION = 8;
++                CURRENT_PROJECT_VERSION = 9;
                  MARKETING_VERSION = 1.1;
                  GENERATE_INFOPLIST_FILE = YES;
                  INFOPLIST_FILE = WatchDotComplication/Info.plist;
@@ -755,12 +977,12 @@
                  PRODUCT_BUNDLE_IDENTIFIER = "$(WATCHDOT_BUNDLE_PREFIX).watchkitapp.launcher";
                  PRODUCT_NAME = "$(TARGET_NAME)";
                  SDKROOT = watchos;
-@@ -343,10 +403,10 @@
+@@ -343,10 +454,10 @@
          D00000000000000000000014 = {isa = XCBuildConfiguration; buildSettings = {
              ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
              CODE_SIGN_STYLE = Automatic;
 -            CURRENT_PROJECT_VERSION = 4;
-+            CURRENT_PROJECT_VERSION = 8;
++            CURRENT_PROJECT_VERSION = 9;
              MARKETING_VERSION = 1.1;
              GENERATE_INFOPLIST_FILE = YES;
 -            INFOPLIST_KEY_CFBundleDisplayName = "Watch Dot";
@@ -768,12 +990,12 @@
              INFOPLIST_KEY_UILaunchScreen_Generation = YES;
              INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
              IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-@@ -360,10 +420,10 @@
+@@ -360,10 +471,10 @@
          D00000000000000000000015 = {isa = XCBuildConfiguration; buildSettings = {
              ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
              CODE_SIGN_STYLE = Automatic;
 -            CURRENT_PROJECT_VERSION = 4;
-+            CURRENT_PROJECT_VERSION = 8;
++            CURRENT_PROJECT_VERSION = 9;
              MARKETING_VERSION = 1.1;
              GENERATE_INFOPLIST_FILE = YES;
 -            INFOPLIST_KEY_CFBundleDisplayName = "Watch Dot";
@@ -843,10 +1065,13 @@
          #endif
          _session = StateObject(wrappedValue: session)
          let bridge = CompanionConnectivity()
-@@ -60,8 +76,11 @@
+@@ -60,8 +76,14 @@
      var body: some Scene {
          WindowGroup {
              ChatRootView(connection: connection, demo: session)
++                .onReceive(connection.petCatalog.$generation) { _ in
++                    SpriteFrameStore.shared.purge()
++                }
 +                #if DEBUG && targetEnvironment(simulator)
 +                .layoutPrivacyPreview(enabled: isLayoutPreview)
 +                #endif
@@ -856,7 +1081,7 @@
                          connection.enterForeground()
                          refreshComplicationImageIfNeeded()
                      }
-@@ -74,6 +93,7 @@
+@@ -74,6 +96,7 @@
                      if case .located = state { session.suspend() }
                  }
                  .onChange(of: scenePhase) { _, phase in
@@ -864,7 +1089,7 @@
                      if phase == .background {
                          session.suspend()
                          connection.enterBackground()
-@@ -87,33 +107,48 @@
+@@ -87,33 +110,48 @@
      private func refreshComplicationImageIfNeeded() {
          // One refresh per icon revision; the launcher still has no periodic timeline.
          let key = "WatchDot.complicationIconRevision"
@@ -918,7 +1143,7 @@
  /// An offline fixture for exercising pull, release and loading without a real account.
  private actor RefreshPreviewTransport: ChatTransport {
      let displayName = "Local preview"
-@@ -147,7 +182,7 @@
+@@ -147,7 +185,7 @@
          NavigationStack {
              Group {
                  if let session = connection.selectedConversation(demo: demo) {
@@ -927,7 +1152,7 @@
                  } else {
                      VStack(spacing: 10) {
                          ScrollView {
-@@ -169,14 +204,17 @@
+@@ -169,14 +207,17 @@
                          }
                      }
                      .padding(.horizontal, 8)
@@ -949,7 +1174,7 @@
                      }
                  }
              }
-@@ -184,6 +222,24 @@
+@@ -184,6 +225,24 @@
          .sheet(isPresented: $showConnection) {
              ConnectionView(connection: connection, session: connection.selectedConversation(demo: demo) ?? demo)
          }
@@ -974,7 +1199,7 @@
      }
  
      private var connectionColor: Color {
-@@ -223,14 +279,21 @@
+@@ -223,14 +282,21 @@
          .buttonStyle(.plain)
          .accessibilityLabel("\(name), connection details")
          .accessibilityValue(status)
@@ -997,7 +1222,7 @@
  
      var body: some View {
          VStack(spacing: 4) {
-@@ -245,8 +308,8 @@
+@@ -245,8 +311,8 @@
                          VStack(alignment: .leading, spacing: 8) {
                              if session.messages.isEmpty {
                                  Text(session.isRealConnection
@@ -1008,7 +1233,7 @@
                                      .font(.footnote).foregroundStyle(.secondary)
                              }
                              ForEach(session.messages) { message in
-@@ -256,25 +319,36 @@
+@@ -256,25 +322,36 @@
                              statusView
                              if let issue = session.storageIssue {
                                  Text(issue).font(.caption2).foregroundStyle(.red)
@@ -1052,7 +1277,7 @@
                                  else {
                                      Image(systemName: "arrow.clockwise")
                                          .rotationEffect(.degrees(min(refreshGestureState.pullDistance / refreshThreshold, 1) * 180))
-@@ -289,18 +363,26 @@
+@@ -289,18 +366,26 @@
                          }
                      }
                      .accessibilityAction(named: Text("Sync messages")) { session.refreshFromGesture() }
@@ -1084,7 +1309,7 @@
                      .font(.footnote)
                      .controlSize(.small)
                      .submitLabel(.done)
-@@ -319,12 +401,50 @@
+@@ -319,12 +404,50 @@
          }
          .padding(.horizontal, 8)
          .ignoresSafeArea(.container, edges: .bottom)
@@ -1137,7 +1362,7 @@
      }
  
      @ViewBuilder
-@@ -387,6 +507,7 @@
+@@ -387,6 +510,7 @@
      private func refreshGesture(atBottom: Bool) -> some Gesture {
          DragGesture(minimumDistance: 8)
              .onChanged { value in
@@ -1145,7 +1370,7 @@
                  if !refreshGestureState.isTracking {
                      refreshGestureState.begin(enabled: atBottom && session.isRealConnection && !session.isSynchronizing,
                                                threshold: refreshThreshold)
-@@ -395,17 +516,22 @@
+@@ -395,17 +519,22 @@
                  refreshGestureState.update(distance: -value.translation.height)
              }
              .onEnded { _ in
@@ -1172,7 +1397,7 @@
  }
  
  /// Observe native scrolling without installing a competing pan recognizer on watchOS 11+.
-@@ -414,6 +540,7 @@
+@@ -414,6 +543,7 @@
      @Binding var gestureState: MessageRefreshGestureState
      let bottomPosition: CGFloat
      let viewportHeight: CGFloat
@@ -1180,7 +1405,7 @@
      let legacyGesture: LegacyGesture
      @State private var interacting = false
  
-@@ -423,6 +550,7 @@
+@@ -423,6 +553,7 @@
              content
                  .scrollBounceBehavior(.always, axes: .vertical)
                  .onScrollPhaseChange { oldPhase, phase, context in
@@ -1188,7 +1413,7 @@
                      if phase == .tracking || phase == .interacting {
                          if !gestureState.isTracking {
                              gestureState.begin(enabled: session.isRealConnection && !session.isSynchronizing)
-@@ -451,7 +579,7 @@
+@@ -451,7 +582,7 @@
                  .onChange(of: session.isSynchronizing) { _, refreshing in
                      if refreshing { gestureState.cancel() }
                  }
@@ -1197,7 +1422,7 @@
          } else {
              content.simultaneousGesture(legacyGesture)
          }
-@@ -466,18 +594,6 @@
+@@ -466,18 +597,6 @@
      }
  }
  
@@ -1216,7 +1441,7 @@
  private struct ConnectionView: View {
      @ObservedObject var connection: ConnectionSession
      @ObservedObject var session: ConversationSession
-@@ -488,13 +604,14 @@
+@@ -488,13 +607,14 @@
          ScrollView {
              VStack(alignment: .leading, spacing: 12) {
                  Text(connection.phase.title).font(.headline)
@@ -1233,7 +1458,7 @@
                  }
                  if connection.isRenewingSession {
                      ProgressView("Renewing session…")
-@@ -508,8 +625,8 @@
+@@ -508,8 +628,8 @@
                      }
                  }
                  Text(connection.phase == .signedIn
@@ -1244,7 +1469,7 @@
                      .foregroundStyle(.secondary)
  
                  if connection.phase == .signedIn {
-@@ -531,39 +648,39 @@
+@@ -531,39 +651,39 @@
                      ForEach(ChatHistorySettings.limits, id: \.self) { Text("\($0)").tag($0) }
                  }
                  .onChange(of: historyLimit) { _, value in ChatHistorySettings.limit = value }
@@ -1380,6 +1605,37 @@
 +    }
 +}
 --- /dev/null
++++ b/Sources/WatchDotCore/AvatarLayout.swift
+@@ -0,0 +1,28 @@
++import Foundation
++
++public enum AvatarLayout {
++    public static let listeningGrowth = 0.06
++    public static let bobAmplitude = 2.0
++    public static let safetyInset = 2.0
++
++    /// Reserve the full motion envelope so changing voice state never resizes the character.
++    public static func glyphSide(width: Double, height: Double, appearance: CompanionAppearance) -> Double {
++        guard width.isFinite, height.isFinite, width > 0, height > 0 else { return 0 }
++        let bounds: (width: Double, height: Double)
++        switch appearance {
++        case .sprite, .pebble:
++            let angle = 7 * Double.pi / 180
++            bounds = (0.88 * cos(angle) + 0.94 * sin(angle),
++                      0.94 * cos(angle) + 0.88 * sin(angle))
++        case .orbit:
++            // The satellite's full orbit exceeds the stroked ring's diameter.
++            bounds = (1.06, 1.06)
++        case .pixel:
++            bounds = (0.88, 0.88)
++        }
++        let scale = 1 + listeningGrowth
++        let availableWidth = max(0, width - 2 * safetyInset)
++        let availableHeight = max(0, height - 2 * (safetyInset + bobAmplitude))
++        return min(availableWidth / (bounds.width * scale), availableHeight / (bounds.height * scale))
++    }
++}
+--- /dev/null
 +++ b/Sources/WatchDotCore/AvatarPresentation.swift
 @@ -0,0 +1,66 @@
 +import Foundation
@@ -1446,6 +1702,27 @@
 +
 +    private func replacing(_ reply: ChatMessage, in replies: [ChatMessage]) -> [ChatMessage] {
 +        replies.map { $0.id == reply.id ? reply : $0 }
++    }
++}
+--- /dev/null
++++ b/Sources/WatchDotCore/AvatarSelection.swift
+@@ -0,0 +1,18 @@
++/// Separates downloaded avatar identifiers from the existing local appearance preference.
++public enum AvatarSelection {
++    private static let prefix = "pet:"
++
++    public static func identifier(for petID: String) -> String { prefix + petID }
++
++    public static func petID(from selection: String) -> String? {
++        guard selection.hasPrefix(prefix) else { return nil }
++        let value = String(selection.dropFirst(prefix.count))
++        return value.isEmpty ? nil : value
++    }
++
++    public static func page(current: String, selected: String, available: [String]) -> String {
++        if available.contains(current) { return current }
++        if available.contains(selected) { return selected }
++        return available.first ?? CompanionAppearance.pebble.rawValue
 +    }
 +}
 --- /dev/null
@@ -1679,6 +1956,875 @@
 +    }
 +}
 --- /dev/null
++++ b/Sources/WatchDotCore/PetCatalog.swift
+@@ -0,0 +1,146 @@
++import Foundation
++import CryptoKit
++
++public struct PetCatalogItem: Identifiable, Equatable, Sendable {
++    public let id: String
++    public let name: String
++    let imageURL: URL?
++    let expiresAt: Date?
++    let updatedAt: String?
++
++    init(id: String, name: String, imageURL: URL? = nil, expiresAt: Date? = nil, updatedAt: String? = nil) {
++        self.id = id; self.name = name; self.imageURL = imageURL
++        self.expiresAt = expiresAt; self.updatedAt = updatedAt
++    }
++
++    func needsURLRefresh(now: Date) -> Bool {
++        imageURL == nil || (expiresAt.map { $0.timeIntervalSince(now) <= 60 } ?? false)
++    }
++
++    static func validID(_ value: String) -> Bool {
++        value.range(of: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$", options: .regularExpression) != nil
++    }
++
++    static func digest(_ parts: [String]) -> String {
++        SHA256.hash(data: Data(parts.map { "\($0.utf8.count):\($0)" }.joined().utf8))
++            .map { String(format: "%02x", $0) }.joined()
++    }
++}
++
++public enum PetCatalogError: Error, Equatable, Sendable {
++    case unavailable, signedOut, identityChanged, invalidResponse, pagination, storage
++    case http(Int)
++    case challenge
++
++    public var message: String {
++        switch self {
++        case .signedOut, .identityChanged: "Sign in again to load your avatars."
++        case .storage: "Avatar storage is unavailable. Try again after unlocking your Watch."
++        case .challenge: "OpenAI could not verify this connection. Try again later."
++        default: "Couldn’t load avatars. Try again later."
++        }
++    }
++}
++
++struct PetCatalogCredentials {
++    let accessToken: String
++    let accountID: String
++    let scope: String
++}
++
++/// The observed subscription route is private and may change independently of this app.
++@MainActor
++struct PetCatalogClient {
++    let http: any SignInHTTP
++    static let pageSize = 20
++    static let maximumPages = 50
++    static let maximumItems = 1_000
++
++    func fetch(credentials: PetCatalogCredentials, validate: () throws -> Void) async throws -> [PetCatalogItem] {
++        var items: [PetCatalogItem] = []
++        var cursor: String?
++        var cursors: Set<String> = []
++        for _ in 0..<Self.maximumPages {
++            try Task.checkCancellation(); try validate()
++            let response = try await http.sendWithMetadata(request(credentials: credentials, cursor: cursor))
++            try Task.checkCancellation(); try validate()
++            guard !response.clientChallenge else { throw PetCatalogError.challenge }
++            guard response.status == 200 else { throw PetCatalogError.http(response.status) }
++            guard response.data.count <= 256_000 else { throw PetCatalogError.invalidResponse }
++            let page: Page
++            do { page = try JSONDecoder().decode(Page.self, from: response.data) }
++            catch { throw PetCatalogError.invalidResponse }
++            guard page.pets.count <= Self.pageSize else { throw PetCatalogError.pagination }
++            let parsed = page.pets.compactMap { try? $0.entry?.item() }
++            for item in parsed where !items.contains(where: { $0.id == item.id }) {
++                items = items + [item]
++            }
++            guard items.count <= Self.maximumItems else { throw PetCatalogError.pagination }
++            guard let next = page.cursor else { return items }
++            guard !next.isEmpty, next.utf8.count <= 4_096, !cursors.contains(next),
++                  next.rangeOfCharacter(from: .controlCharacters) == nil else { throw PetCatalogError.pagination }
++            cursors = cursors.union([next]); cursor = next
++        }
++        throw PetCatalogError.pagination
++    }
++
++    private func request(credentials: PetCatalogCredentials, cursor: String?) -> URLRequest {
++        var url = URLComponents(string: "https://chatgpt.com/backend-api/pets")!
++        url.queryItems = [URLQueryItem(name: "limit", value: String(Self.pageSize))]
++            + (cursor.map { [URLQueryItem(name: "cursor", value: $0)] } ?? [])
++        var request = URLRequest(url: url.url!, cachePolicy: .reloadIgnoringLocalCacheData)
++        request.httpShouldHandleCookies = false
++        request.setValue("Bearer \(credentials.accessToken)", forHTTPHeaderField: "Authorization")
++        request.setValue(credentials.accountID, forHTTPHeaderField: "ChatGPT-Account-ID")
++        request.setValue("watch-dot", forHTTPHeaderField: "originator")
++        request.setValue("WatchDot/1.0", forHTTPHeaderField: "User-Agent")
++        request.setValue("application/json", forHTTPHeaderField: "Accept")
++        return request
++    }
++
++    private struct Page: Decodable {
++        let pets: [LossyEntry]
++        let cursor: String?
++    }
++
++    private struct LossyEntry: Decodable {
++        let entry: Entry?
++        init(from decoder: any Decoder) throws { entry = try? Entry(from: decoder) }
++    }
++
++    private struct Entry: Decodable {
++        let id: String
++        let name: String
++        let spritesheet_url: String?
++        let spritesheet_url_expires_at: String?
++        let updated_at: String?
++
++        func item() throws -> PetCatalogItem {
++            let cleanName = name.components(separatedBy: .controlCharacters).joined()
++                .trimmingCharacters(in: .whitespacesAndNewlines)
++            guard PetCatalogItem.validID(id), !cleanName.isEmpty, name.utf8.count <= 1_024,
++                  (updated_at?.utf8.count ?? 0) <= 128 else { throw PetCatalogError.invalidResponse }
++            var url: URL?
++            if let raw = spritesheet_url {
++                guard raw.utf8.count <= 16_384, let candidate = URL(string: raw),
++                      candidate.scheme == "https", candidate.host == "cdn.openai.com",
++                      candidate.user == nil, candidate.password == nil,
++                      candidate.port == nil, candidate.fragment == nil else { throw PetCatalogError.invalidResponse }
++                url = candidate
++            }
++            var expiry: Date?
++            if let raw = spritesheet_url_expires_at {
++                let formatter = ISO8601DateFormatter()
++                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
++                expiry = formatter.date(from: raw)
++                if expiry == nil {
++                    formatter.formatOptions = [.withInternetDateTime]
++                    expiry = formatter.date(from: raw)
++                }
++                guard expiry != nil else { throw PetCatalogError.invalidResponse }
++            }
++            return PetCatalogItem(id: id, name: String(cleanName.prefix(80)), imageURL: url,
++                                  expiresAt: expiry, updatedAt: updated_at)
++        }
++    }
++}
+--- /dev/null
++++ b/Sources/WatchDotCore/PetCatalogSession.swift
+@@ -0,0 +1,461 @@
++import Foundation
++import Combine
++import CryptoKit
++
++public struct PetCachedAsset: Equatable, Sendable {
++    public let url: URL
++    public let rowCount: Int
++}
++
++@MainActor
++public final class PetCatalogSession: ObservableObject {
++    @Published public private(set) var items: [PetCatalogItem] = []
++    @Published public private(set) var isLoading = false
++    @Published public private(set) var errorMessage: String?
++    @Published public private(set) var generation = UUID()
++    @Published public private(set) var cacheRevision = UUID()
++    public private(set) var scope: String?
++
++    private let directory: URL
++    private let downloader: any PetImageDownloading
++    private let now: () -> Date
++    private let maximumCacheBytes: Int
++    private let cacheValidator: CacheValidator
++    private var fetch: (() async throws -> [PetCatalogItem])?
++    private var catalogTask: Task<Void, Never>?
++    private var imageTasks: [String: ImageRequest] = [:]
++    private var activeDownloads: Set<UUID> = []
++    private var waitingDownloads: [(UUID, CheckedContinuation<Void, Error>)] = []
++    private var operation = UUID()
++    private var assets: [StoredAsset] = []
++    private var selectedID: String?
++    private var lastRefresh: Date?
++    private var refreshRetryAfter: Date?
++    private var validatedFiles: Set<String> = []
++    private var warmTask: Task<Void, Never>?
++    private var hasBound = false
++    private var isSuspended = false
++    static let maximumManifestBytes = 2_097_152
++
++    public convenience init(directory: URL, downloader: any PetImageDownloading = PetImageDownloader(),
++                maximumCacheBytes: Int = 32 * 1024 * 1024, now: @escaping () -> Date = Date.init) {
++        self.init(directory: directory, downloader: downloader, maximumCacheBytes: maximumCacheBytes,
++                  now: now, cacheValidator: Self.validateCacheFile)
++    }
++
++    init(directory: URL, downloader: any PetImageDownloading,
++         maximumCacheBytes: Int = 32 * 1024 * 1024, now: @escaping () -> Date = Date.init,
++         cacheValidator: @escaping CacheValidator) {
++        self.directory = directory; self.downloader = downloader
++        self.cacheValidator = cacheValidator
++        self.maximumCacheBytes = maximumCacheBytes; self.now = now
++    }
++
++    func configure(fetch: @escaping () async throws -> [PetCatalogItem]) { self.fetch = fetch }
++
++    /// Identity changes synchronously clear observable content and cancel every pending write.
++    func bind(to newScope: String?) {
++        guard !hasBound || scope != newScope else { return }
++        hasBound = true
++        suspend()
++        scope = newScope; items = []; assets = []; validatedFiles = []
++        selectedID = nil; lastRefresh = nil; refreshRetryAfter = nil; errorMessage = nil; cacheRevision = UUID()
++        generation = UUID()
++        isSuspended = false
++        do {
++            try protectDirectory(directory)
++            for child in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
++                if child.lastPathComponent != newScope { try FileManager.default.removeItem(at: child) }
++            }
++            if let newScope { try load(scope: newScope) }
++            warmSelectedAsset()
++        } catch { errorMessage = PetCatalogError.storage.message }
++    }
++
++    /// Protected credentials may be temporarily unreadable while the device is locked.
++    func hideForUnavailableIdentity() {
++        suspend()
++        scope = nil; items = []; assets = []; validatedFiles = []; selectedID = nil
++        hasBound = false; cacheRevision = UUID(); generation = UUID()
++        errorMessage = PetCatalogError.storage.message
++    }
++
++    public func suspend() {
++        isSuspended = true
++        operation = UUID()
++        catalogTask?.cancel(); catalogTask = nil
++        warmTask?.cancel(); warmTask = nil
++        for request in imageTasks.values { request.task.cancel() }
++        imageTasks = [:]; isLoading = false
++    }
++
++    public func resume() { isSuspended = false; warmSelectedAsset() }
++
++    public func refresh(retry: Bool = false) async { await refresh(force: retry, bypassBackoff: retry) }
++
++    private func refresh(force: Bool, bypassBackoff: Bool = false) async {
++        if let task = catalogTask { await task.value; return }
++        guard !Task.isCancelled, !isSuspended, scope != nil, let fetch else { return }
++        if !bypassBackoff, let refreshRetryAfter, now() < refreshRetryAfter { return }
++        if !force, let lastRefresh, now().timeIntervalSince(lastRefresh) < 180 { return }
++        let expected = generation, currentOperation = operation
++        isLoading = true
++        let task = Task { [weak self] in
++            guard let self else { return }
++            defer { if self.operation == currentOperation { self.isLoading = false; self.catalogTask = nil } }
++            do {
++                let result = try await fetch()
++                try self.check(expected, currentOperation)
++                self.items = result; self.lastRefresh = self.now(); self.refreshRetryAfter = nil; self.errorMessage = nil
++                try self.persist()
++            } catch is CancellationError { }
++            catch {
++                guard self.generation == expected, self.operation == currentOperation else { return }
++                self.refreshRetryAfter = self.now().addingTimeInterval(30)
++                self.errorMessage = (error as? PetCatalogError)?.message ?? PetCatalogError.unavailable.message
++            }
++        }
++        catalogTask = task
++        await task.value
++    }
++
++    public func cachedAsset(for id: String) -> PetCachedAsset? {
++        guard let scope, let asset = assets.first(where: { $0.id == id }), validatedFiles.contains(asset.filename),
++              FileManager.default.fileExists(atPath: fileURL(asset, scope: scope).path) else { return nil }
++        return PetCachedAsset(url: fileURL(asset, scope: scope), rowCount: asset.rowCount)
++    }
++
++    public func cachedURL(for id: String) -> URL? { cachedAsset(for: id)?.url }
++
++    public func select(id: String?) {
++        guard id == nil || PetCatalogItem.validID(id!) else { return }
++        selectedID = id
++        assets = assets.map { $0.id == id ? $0.accessed(at: now()) : $0 }
++        do { try persist() } catch { errorMessage = PetCatalogError.storage.message }
++    }
++
++    public func prepare(id: String) async -> URL? {
++        guard !Task.isCancelled, !isSuspended, PetCatalogItem.validID(id), scope != nil else { return nil }
++        if let cached = cachedURL(for: id), let asset = assets.first(where: { $0.id == id }),
++           !items.contains(where: { $0.id == id && $0.updatedAt != asset.updatedAt }) {
++            assets = assets.map { $0.id == id ? $0.accessed(at: now()) : $0 }
++            return cached
++        }
++        let waiter = UUID()
++        if let request = imageTasks[id] {
++            imageTasks = imageTasks.merging([id: request.adding(waiter)]) { _, new in new }
++            return await wait(for: request, petID: id, waiter: waiter)
++        }
++        let expected = generation, currentOperation = operation
++        errorMessage = nil
++        let requestID = UUID()
++        let task = Task { [weak self] () -> URL? in
++            guard let self else { return nil }
++            defer {
++                self.releaseDownload(requestID)
++                if self.imageTasks[id]?.id == requestID {
++                    self.imageTasks = self.imageTasks.filter { $0.key != id }
++                }
++            }
++            do {
++                try await self.acquireDownload(requestID)
++                return try await self.prepareImage(id: id, generation: expected, operation: currentOperation)
++            } catch is CancellationError { return nil }
++            catch {
++                guard self.generation == expected, self.operation == currentOperation else { return nil }
++                self.errorMessage = (error as? PetCatalogError)?.message ?? "Couldn’t download this avatar. Try again later."
++                return self.cachedURL(for: id)
++            }
++        }
++        let request = ImageRequest(id: requestID, task: task, waiters: [waiter])
++        imageTasks = imageTasks.merging([id: request]) { _, new in new }
++        return await wait(for: request, petID: id, waiter: waiter)
++    }
++
++    private func wait(for request: ImageRequest, petID: String, waiter: UUID) async -> URL? {
++        await withTaskCancellationHandler {
++            let result = await request.task.value
++            removeWaiter(waiter, petID: petID, requestID: request.id)
++            return Task.isCancelled ? nil : result
++        } onCancel: {
++            Task { @MainActor [weak self] in self?.removeWaiter(waiter, petID: petID, requestID: request.id) }
++        }
++    }
++
++    private func removeWaiter(_ waiter: UUID, petID: String, requestID: UUID) {
++        guard let request = imageTasks[petID], request.id == requestID else { return }
++        let remaining = request.waiters.subtracting([waiter])
++        if remaining.isEmpty {
++            request.task.cancel()
++            imageTasks = imageTasks.filter { $0.key != petID }
++        } else {
++            imageTasks = imageTasks.merging([petID: ImageRequest(id: request.id, task: request.task, waiters: remaining)]) { _, new in new }
++        }
++    }
++
++    private func acquireDownload(_ id: UUID) async throws {
++        try Task.checkCancellation()
++        if activeDownloads.count < 2 { activeDownloads = activeDownloads.union([id]); return }
++        try await withTaskCancellationHandler {
++            try await withCheckedThrowingContinuation { continuation in
++                waitingDownloads = waitingDownloads + [(id, continuation)]
++            }
++        } onCancel: {
++            Task { @MainActor [weak self] in self?.cancelWaitingDownload(id) }
++        }
++        try Task.checkCancellation()
++    }
++
++    private func cancelWaitingDownload(_ id: UUID) {
++        guard let waiting = waitingDownloads.first(where: { $0.0 == id }) else { return }
++        waitingDownloads = waitingDownloads.filter { $0.0 != id }
++        waiting.1.resume(throwing: CancellationError())
++    }
++
++    private func releaseDownload(_ id: UUID) {
++        guard activeDownloads.contains(id) else { return }
++        activeDownloads = activeDownloads.subtracting([id])
++        if let next = waitingDownloads.first {
++            waitingDownloads = Array(waitingDownloads.dropFirst())
++            activeDownloads = activeDownloads.union([next.0])
++            next.1.resume()
++        }
++    }
++
++    private func prepareImage(id: String, generation: UUID, operation: UUID) async throws -> URL {
++        if let asset = assets.first(where: { $0.id == id }),
++           !items.contains(where: { $0.id == id && $0.updatedAt != asset.updatedAt }),
++           let cached = try await validateCachedAsset(asset, generation: generation, operation: operation) {
++            errorMessage = nil
++            return cached
++        }
++        if items.first(where: { $0.id == id })?.needsURLRefresh(now: now()) != false {
++            await refresh(force: true)
++            try check(generation, operation)
++        }
++        for attempt in 0...1 {
++            try check(generation, operation)
++            guard let item = items.first(where: { $0.id == id }), !item.needsURLRefresh(now: now()),
++                  let url = item.imageURL else { throw PetCatalogError.unavailable }
++            do {
++                let payload = try await downloader.download(from: url)
++                let hashing = Task.detached(priority: .utility) {
++                    try Task.checkCancellation()
++                    return SHA256.hash(data: payload.data).map { String(format: "%02x", $0) }.joined()
++                }
++                let digest = try await withTaskCancellationHandler { try await hashing.value } onCancel: { hashing.cancel() }
++                try check(generation, operation)
++                let saved = try save(payload, item: item, contentHash: digest)
++                return saved
++            } catch PetImageDownloadError.httpStatus(let status) where attempt == 0 && [403, 404, 410].contains(status) {
++                await refresh(force: true, bypassBackoff: true)
++                try check(generation, operation)
++            }
++        }
++        throw PetCatalogError.unavailable
++    }
++
++    private func check(_ expected: UUID, _ currentOperation: UUID) throws {
++        try Task.checkCancellation()
++        guard generation == expected, operation == currentOperation, scope != nil else {
++            throw PetCatalogError.identityChanged
++        }
++    }
++
++    private func save(_ payload: PetImagePayload, item: PetCatalogItem, contentHash: String) throws -> URL {
++        guard let scope else { throw PetCatalogError.identityChanged }
++        guard payload.width == 1_536, [1_872, 2_288].contains(payload.height),
++              payload.data.count <= PetImageDownloader.maximumBytes else { throw PetCatalogError.storage }
++        let filename = PetCatalogItem.digest([scope, item.id, item.updatedAt ?? "", contentHash]) + ".atlas"
++        let asset = StoredAsset(id: item.id, filename: filename, format: payload.format,
++            rowCount: payload.rowCount, byteCount: payload.data.count, updatedAt: item.updatedAt,
++            contentHash: contentHash, accessedAt: now())
++        let url = fileURL(asset, scope: scope)
++        try protectDirectory(url.deletingLastPathComponent())
++        try write(payload.data, to: url)
++        assets = assets.filter { $0.id != item.id } + [asset]
++        try evict(preserving: item.id)
++        try persist()
++        validatedFiles = validatedFiles.union([asset.filename])
++        errorMessage = nil
++        cacheRevision = UUID()
++        return url
++    }
++
++    private func warmSelectedAsset() {
++        guard !isSuspended, warmTask == nil, let selectedID,
++              let asset = assets.first(where: { $0.id == selectedID }),
++              !validatedFiles.contains(asset.filename) else { return }
++        let expected = generation, currentOperation = operation
++        warmTask = Task { [weak self] in
++            guard let self else { return }
++            defer { if self.operation == currentOperation { self.warmTask = nil } }
++            do { _ = try await self.validateCachedAsset(asset, generation: expected, operation: currentOperation) }
++            catch is CancellationError { }
++            catch {
++                if self.generation == expected, self.operation == currentOperation {
++                    self.errorMessage = PetCatalogError.storage.message
++                }
++            }
++        }
++    }
++
++    private func validateCachedAsset(_ asset: StoredAsset, generation: UUID, operation: UUID) async throws -> URL? {
++        try check(generation, operation)
++        guard let scope else { throw PetCatalogError.identityChanged }
++        let url = fileURL(asset, scope: scope)
++        if validatedFiles.contains(asset.filename) {
++            if let cached = cachedURL(for: asset.id) { return cached }
++            validatedFiles = validatedFiles.subtracting([asset.filename])
++            return nil
++        }
++        let request = CacheValidationRequest(url: url, byteCount: asset.byteCount,
++            contentHash: asset.contentHash, format: asset.format, rowCount: asset.rowCount)
++        let validate = cacheValidator
++        let validation = Task.detached(priority: .utility) { try await validate(request) }
++        let valid = try await withTaskCancellationHandler { try await validation.value } onCancel: { validation.cancel() }
++        try check(generation, operation)
++        guard assets.contains(where: { $0.id == asset.id && $0.filename == asset.filename }),
++              !validatedFiles.contains(asset.filename) else { return cachedURL(for: asset.id) }
++        guard valid else {
++            assets = assets.filter { $0.filename != asset.filename }
++            do { try FileManager.default.removeItem(at: url) }
++            catch where Self.isMissingFile(error) { }
++            try persist()
++            return nil
++        }
++        validatedFiles = validatedFiles.union([asset.filename]); cacheRevision = UUID()
++        return url
++    }
++
++    struct CacheValidationRequest: Sendable {
++        let url: URL
++        let byteCount: Int
++        let contentHash: String
++        let format: PetImageFormat
++        let rowCount: Int
++    }
++    typealias CacheValidator = @Sendable (CacheValidationRequest) async throws -> Bool
++
++    nonisolated private static func validateCacheFile(_ request: CacheValidationRequest) async throws -> Bool {
++        try Task.checkCancellation()
++        do {
++            guard let size = try request.url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
++                  size == request.byteCount, size <= PetImageDownloader.maximumBytes else { return false }
++            let data = try Data(contentsOf: request.url)
++            try Task.checkCancellation()
++            guard SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == request.contentHash,
++                  let image = try? PetImageDownloader.validate(data: data, mimeType: request.format.mimeType),
++                  image.rowCount == request.rowCount else { return false }
++            try Task.checkCancellation()
++            return true
++        } catch where isMissingFile(error) { return false }
++    }
++
++    nonisolated private static func isMissingFile(_ error: Error) -> Bool {
++        guard let error = error as? CocoaError else { return false }
++        return error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile
++    }
++
++    private func evict(preserving id: String) throws {
++        guard let scope else { return }
++        var retained = assets
++        for asset in assets.sorted(by: { $0.accessedAt < $1.accessedAt }) {
++            guard retained.reduce(0, { $0 + $1.byteCount }) > maximumCacheBytes else { break }
++            if asset.id == selectedID || asset.id == id { continue }
++            try FileManager.default.removeItem(at: fileURL(asset, scope: scope))
++            retained = retained.filter { $0.filename != asset.filename }
++        }
++        assets = retained
++        let names = Set(assets.map(\.filename)).union(["catalog.json"])
++        for file in try FileManager.default.contentsOfDirectory(at: scopeURL(scope), includingPropertiesForKeys: nil) {
++            if !names.contains(file.lastPathComponent) { try FileManager.default.removeItem(at: file) }
++        }
++    }
++
++    private func load(scope: String) throws {
++        let folder = scopeURL(scope)
++        try protectDirectory(folder)
++        let manifestURL = folder.appendingPathComponent("catalog.json")
++        guard FileManager.default.fileExists(atPath: manifestURL.path) else { return }
++        guard let size = try manifestURL.resourceValues(forKeys: [.fileSizeKey]).fileSize,
++              size <= Self.maximumManifestBytes else { throw PetCatalogError.storage }
++        let data = try Data(contentsOf: manifestURL)
++        guard data.count <= Self.maximumManifestBytes else { throw PetCatalogError.storage }
++        let manifest = try JSONDecoder().decode(Manifest.self, from: data)
++        guard manifest.items.count <= 1_000, manifest.assets.count <= 1_000,
++              manifest.items.allSatisfy({ PetCatalogItem.validID($0.id) && $0.name.count <= 80 }) else {
++            throw PetCatalogError.storage
++        }
++        let valid = manifest.assets.compactMap { asset -> StoredAsset? in
++            guard PetCatalogItem.validID(asset.id), asset.filename.range(of: "^[a-f0-9]{64}\\.atlas$", options: .regularExpression) != nil,
++                  (0...PetImageDownloader.maximumBytes).contains(asset.byteCount), [9, 11].contains(asset.rowCount) else { return nil }
++            let url = fileURL(asset, scope: scope)
++            guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size == asset.byteCount else { return nil }
++            return asset
++        }
++        items = manifest.items.map { PetCatalogItem(id: $0.id, name: $0.name, updatedAt: $0.updatedAt) }
++        assets = valid
++        selectedID = manifest.selectedID.flatMap { PetCatalogItem.validID($0) ? $0 : nil }
++        try evict(preserving: selectedID ?? "")
++    }
++
++    private func persist() throws {
++        guard let scope else { return }
++        let manifest = Manifest(items: items.map { StoredItem(id: $0.id, name: $0.name, updatedAt: $0.updatedAt) },
++                                assets: assets, selectedID: selectedID)
++        let folder = scopeURL(scope)
++        try protectDirectory(folder)
++        let data = try JSONEncoder().encode(manifest)
++        guard data.count <= Self.maximumManifestBytes else { throw PetCatalogError.storage }
++        try write(data, to: folder.appendingPathComponent("catalog.json"))
++    }
++
++    private func scopeURL(_ scope: String) -> URL { directory.appendingPathComponent(scope, isDirectory: true) }
++    private func fileURL(_ asset: StoredAsset, scope: String) -> URL { scopeURL(scope).appendingPathComponent(asset.filename) }
++
++    private func protectDirectory(_ url: URL) throws {
++        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
++        #if os(iOS) || os(watchOS)
++        try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path)
++        #endif
++        var mutableURL = url, values = URLResourceValues()
++        values.isExcludedFromBackup = true
++        try mutableURL.setResourceValues(values)
++    }
++
++    private func write(_ data: Data, to url: URL) throws {
++        #if os(iOS) || os(watchOS)
++        try data.write(to: url, options: [.atomic, .completeFileProtection])
++        #else
++        try data.write(to: url, options: .atomic)
++        #endif
++    }
++
++    private struct Manifest: Codable {
++        let items: [StoredItem]
++        let assets: [StoredAsset]
++        let selectedID: String?
++    }
++    private struct ImageRequest {
++        let id: UUID
++        let task: Task<URL?, Never>
++        let waiters: Set<UUID>
++        func adding(_ waiter: UUID) -> Self { Self(id: id, task: task, waiters: waiters.union([waiter])) }
++    }
++    private struct StoredItem: Codable { let id: String; let name: String; let updatedAt: String? }
++    private struct StoredAsset: Codable, Sendable {
++        let id: String
++        let filename: String
++        let format: PetImageFormat
++        let rowCount: Int
++        let byteCount: Int
++        let updatedAt: String?
++        let contentHash: String
++        let accessedAt: Date
++        func accessed(at date: Date) -> Self {
++            Self(id: id, filename: filename, format: format, rowCount: rowCount, byteCount: byteCount,
++                 updatedAt: updatedAt, contentHash: contentHash, accessedAt: date)
++        }
++    }
++}
+--- /dev/null
++++ b/Sources/WatchDotCore/PetImageDownloader.swift
+@@ -0,0 +1,158 @@
++import Foundation
++import ImageIO
++
++public enum PetImageFormat: String, Codable, Sendable {
++    case png, webP
++
++    public var mimeType: String { self == .png ? "image/png" : "image/webp" }
++    var typeIdentifier: String { self == .png ? "public.png" : "org.webmproject.webp" }
++}
++
++public struct PetImagePayload: Sendable {
++    public let data: Data
++    public let format: PetImageFormat
++    public let width: Int
++    public let height: Int
++    public var rowCount: Int { height / 208 }
++    public var mimeType: String { format.mimeType }
++
++    public init(data: Data, format: PetImageFormat, width: Int, height: Int) {
++        self.data = data
++        self.format = format
++        self.width = width
++        self.height = height
++    }
++}
++
++public enum PetImageDownloadError: Error, Equatable, Sendable {
++    case invalidURL, unavailable, tls, tooLarge, invalidImage, unsupportedFormat, dimensions, animatedImage
++    case httpStatus(Int)
++}
++
++public protocol PetImageDownloading: Sendable {
++    func download(from url: URL) async throws -> PetImagePayload
++}
++
++final class PetImageNoRedirects: NSObject, URLSessionTaskDelegate, Sendable {
++    func urlSession(_ session: URLSession, task: URLSessionTask,
++                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
++                    completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
++        completionHandler(nil)
++    }
++}
++
++public final class PetImageDownloader: PetImageDownloading {
++    public static let maximumBytes = 8 * 1024 * 1024
++    private let session: URLSession
++
++    public convenience init() { self.init(protocolClasses: []) }
++
++    init(protocolClasses: [AnyClass]) {
++        let configuration = URLSessionConfiguration.ephemeral
++        configuration.httpCookieStorage = nil
++        configuration.httpShouldSetCookies = false
++        configuration.urlCache = nil
++        configuration.urlCredentialStorage = nil
++        configuration.timeoutIntervalForRequest = 30
++        configuration.timeoutIntervalForResource = 30
++        if !protocolClasses.isEmpty { configuration.protocolClasses = protocolClasses }
++        session = URLSession(configuration: configuration, delegate: PetImageNoRedirects(), delegateQueue: nil)
++    }
++
++    deinit { session.invalidateAndCancel() }
++
++    public static func validateURL(_ url: URL) throws {
++        guard url.scheme?.lowercased() == "https", url.host?.lowercased() == "cdn.openai.com",
++              url.port == nil || url.port == 443, url.user == nil, url.password == nil,
++              url.fragment == nil else { throw PetImageDownloadError.invalidURL }
++    }
++
++    public func download(from url: URL) async throws -> PetImagePayload {
++        try Self.validateURL(url)
++        try Task.checkCancellation()
++        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
++        request.httpShouldHandleCookies = false
++        request.setValue("image/png, image/webp", forHTTPHeaderField: "Accept")
++        do {
++            let (bytes, response) = try await session.bytes(for: request)
++            defer { bytes.task.cancel() }
++            guard let response = response as? HTTPURLResponse, response.url == url else {
++                throw PetImageDownloadError.invalidURL
++            }
++            guard response.statusCode == 200 else { throw PetImageDownloadError.httpStatus(response.statusCode) }
++            guard response.value(forHTTPHeaderField: "cf-mitigated") != "challenge" else {
++                throw PetImageDownloadError.unsupportedFormat
++            }
++            guard response.expectedContentLength <= Int64(Self.maximumBytes) else {
++                throw PetImageDownloadError.tooLarge
++            }
++            let mime = response.value(forHTTPHeaderField: "Content-Type") ?? ""
++            guard Self.format(mimeType: mime) != nil else { throw PetImageDownloadError.unsupportedFormat }
++            var data = Data()
++            for try await byte in bytes {
++                try Task.checkCancellation()
++                guard data.count < Self.maximumBytes else { throw PetImageDownloadError.tooLarge }
++                data.append(byte)
++            }
++            try Task.checkCancellation()
++            return try await PetImageValidator.shared.validate(data: data, mimeType: mime)
++        } catch {
++            if Task.isCancelled || (error as? URLError)?.code == .cancelled { throw CancellationError() }
++            if let safe = error as? PetImageDownloadError { throw safe }
++            if let network = error as? URLError,
++               [.serverCertificateUntrusted, .serverCertificateHasBadDate, .serverCertificateHasUnknownRoot,
++                .serverCertificateNotYetValid, .secureConnectionFailed].contains(network.code) {
++                throw PetImageDownloadError.tls
++            }
++            throw PetImageDownloadError.unavailable
++        }
++    }
++
++    public static func validate(data: Data, mimeType: String) throws -> PetImagePayload {
++        let format = try validateEnvelope(data: data, mimeType: mimeType)
++        let options = [kCGImageSourceShouldCache: false] as CFDictionary
++        let imageSource = CGImageSourceCreateWithData(data as CFData, options)
++        guard let source = imageSource,
++              CGImageSourceGetType(source) as String? == format.typeIdentifier else {
++            throw PetImageDownloadError.unsupportedFormat
++        }
++        guard CGImageSourceGetCount(source) == 1 else { throw PetImageDownloadError.animatedImage }
++        guard CGImageSourceGetStatus(source) == .statusComplete,
++              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, options) as? [CFString: Any],
++              let width = properties[kCGImagePropertyPixelWidth] as? Int,
++              let height = properties[kCGImagePropertyPixelHeight] as? Int else {
++            throw PetImageDownloadError.invalidImage
++        }
++        guard width == 1536, height == 1872 || height == 2288 else { throw PetImageDownloadError.dimensions }
++        guard let image = CGImageSourceCreateImageAtIndex(source, 0, options),
++              image.width == width, image.height == height else { throw PetImageDownloadError.invalidImage }
++        return PetImagePayload(data: data, format: format, width: width, height: height)
++    }
++
++    static func validateEnvelope(data: Data, mimeType: String) throws -> PetImageFormat {
++        guard data.count <= maximumBytes else { throw PetImageDownloadError.tooLarge }
++        guard let format = format(mimeType: mimeType), magicMatches(data, format: format) else {
++            throw PetImageDownloadError.unsupportedFormat
++        }
++        return format
++    }
++
++    private static func format(mimeType: String) -> PetImageFormat? {
++        let mime = mimeType.split(separator: ";", maxSplits: 1).first?
++            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
++        return PetImageFormat.all.first { $0.mimeType == mime }
++    }
++
++    private static func magicMatches(_ data: Data, format: PetImageFormat) -> Bool {
++        switch format {
++        case .png: data.starts(with: [137, 80, 78, 71, 13, 10, 26, 10])
++        case .webP:
++            data.count >= 12 && data.prefix(4) == Data("RIFF".utf8)
++                && data.dropFirst(8).prefix(4) == Data("WEBP".utf8)
++        }
++    }
++}
++
++private extension PetImageFormat {
++    static let all: [Self] = [.png, .webP]
++}
+--- /dev/null
++++ b/Sources/WatchDotCore/PetWebPDecoder.swift
+@@ -0,0 +1,92 @@
++import CoreGraphics
++import Foundation
++import ImageIO
++import libwebp
++
++/// Serializes bounded decoding work away from the UI actor.
++public actor PetImageValidator {
++    public static let shared = PetImageValidator()
++    private let supportsNativeWebP: Bool
++
++    init(supportsNativeWebP: Bool = (CGImageSourceCopyTypeIdentifiers() as? [String] ?? [])
++        .contains(PetImageFormat.webP.typeIdentifier)) {
++        self.supportsNativeWebP = supportsNativeWebP
++    }
++
++    public func validate(data: Data, mimeType: String) throws -> PetImagePayload {
++        try Task.checkCancellation()
++        let format = try PetImageDownloader.validateEnvelope(data: data, mimeType: mimeType)
++        let payload = if format == .webP && !supportsNativeWebP {
++            try PetWebPDecoder.decode(data)
++        } else {
++            try PetImageDownloader.validate(data: data, mimeType: mimeType)
++        }
++        try Task.checkCancellation()
++        return payload
++    }
++}
++
++enum PetWebPDecoder {
++    static func decode(_ data: Data) throws -> PetImagePayload {
++        _ = try PetImageDownloader.validateEnvelope(data: data, mimeType: "image/webp")
++        var features = WebPBitstreamFeatures()
++        let status = data.withUnsafeBytes {
++            WebPGetFeatures($0.bindMemory(to: UInt8.self).baseAddress, data.count, &features)
++        }
++        guard status == VP8_STATUS_OK else { throw PetImageDownloadError.invalidImage }
++        guard features.has_animation == 0 else { throw PetImageDownloadError.animatedImage }
++        let width = Int(features.width), height = Int(features.height)
++        guard width == 1536, height == 1872 || height == 2288 else {
++            throw PetImageDownloadError.dimensions
++        }
++        try Task.checkCancellation()
++        let stride = width * 4
++        let byteCount = stride * height
++        var pixels = Data(count: byteCount)
++        let decoded = pixels.withUnsafeMutableBytes { destination in
++            data.withUnsafeBytes { source in
++                WebPDecodeRGBAInto(source.bindMemory(to: UInt8.self).baseAddress, data.count,
++                    destination.bindMemory(to: UInt8.self).baseAddress, byteCount, Int32(stride)) != nil
++            }
++        }
++        guard decoded else { throw PetImageDownloadError.invalidImage }
++        try Task.checkCancellation()
++        guard let provider = CGDataProvider(data: pixels as CFData),
++              let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
++                bytesPerRow: stride, space: CGColorSpaceCreateDeviceRGB(),
++                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue), provider: provider,
++                decode: nil, shouldInterpolate: false, intent: .defaultIntent) else {
++            throw PetImageDownloadError.invalidImage
++        }
++        let png = try encodePNG(image)
++        return PetImagePayload(data: png, format: .png, width: width, height: height)
++    }
++
++    private static func encodePNG(_ image: CGImage) throws -> Data {
++        let output = BoundedPNGOutput()
++        var callbacks = CGDataConsumerCallbacks(putBytes: { info, bytes, count in
++            guard let info else { return 0 }
++            let output = Unmanaged<BoundedPNGOutput>.fromOpaque(info).takeUnretainedValue()
++            guard count <= PetImageDownloader.maximumBytes - output.data.count else {
++                output.tooLarge = true
++                return 0
++            }
++            output.data.append(bytes.assumingMemoryBound(to: UInt8.self), count: count)
++            return count
++        }, releaseConsumer: nil)
++        guard let consumer = CGDataConsumer(info: Unmanaged.passUnretained(output).toOpaque(), cbks: &callbacks),
++              let destination = CGImageDestinationCreateWithDataConsumer(consumer, "public.png" as CFString, 1, nil) else {
++            throw PetImageDownloadError.invalidImage
++        }
++        CGImageDestinationAddImage(destination, image, nil)
++        let complete = CGImageDestinationFinalize(destination)
++        if output.tooLarge { throw PetImageDownloadError.tooLarge }
++        guard complete else { throw PetImageDownloadError.invalidImage }
++        return output.data
++    }
++}
++
++private final class BoundedPNGOutput {
++    var data = Data()
++    var tooLarge = false
++}
+--- /dev/null
 +++ b/Sources/WatchDotCore/SensitiveContentPolicy.swift
 @@ -0,0 +1,7 @@
 +/// Content stays private until both the app and its display are ready for the wearer.
@@ -1686,6 +2832,35 @@
 +    public static func isVisible(isActive: Bool, luminanceReduced: Bool,
 +                                 privacyRedacted: Bool) -> Bool {
 +        isActive && !luminanceReduced && !privacyRedacted
++    }
++}
+--- /dev/null
++++ b/Sources/WatchDotCore/SpriteAtlasLayout.swift
+@@ -0,0 +1,26 @@
++public struct SpriteAtlasLayout: Equatable, Sendable {
++    public struct Crop: Equatable, Sendable {
++        public let x: Int
++        public let y: Int
++        public let width: Int
++        public let height: Int
++    }
++
++    public let width: Int
++    public let height: Int
++
++    public init?(width: Int, height: Int) {
++        guard width == 1536, height == 1872 || height == 2288 else { return nil }
++        self.width = width
++        self.height = height
++    }
++
++    public func crop(minX: Int, minY: Int, maxX: Int, maxY: Int) -> Crop? {
++        guard minX >= 0, minY >= 0, maxX > minX, maxY > minY,
++              maxX <= AvatarAnimation.cellWidth, maxY <= AvatarAnimation.cellHeight else { return nil }
++        let x = max(0, minX - 2)
++        let y = max(0, minY - 2)
++        return Crop(x: x, y: y, width: min(AvatarAnimation.cellWidth, maxX + 2) - x,
++                    height: min(AvatarAnimation.cellHeight, maxY + 2) - y)
 +    }
 +}
 --- /dev/null
@@ -1958,6 +3133,76 @@
 +    }
 +}
 --- /dev/null
++++ b/Tests/WatchDotCoreTests/AvatarLayoutTests.swift
+@@ -0,0 +1,67 @@
++import XCTest
++@testable import WatchDotCore
++
++final class AvatarLayoutTests: XCTestCase {
++    func testInvalidAndCompressedSpaceCannotProduceNegativeOrNonfiniteSize() {
++        for appearance in CompanionAppearance.allCases {
++            for dimension in [-1.0, 0, Double.infinity, -Double.infinity, Double.nan] {
++                XCTAssertEqual(AvatarLayout.glyphSide(width: dimension, height: 180, appearance: appearance), 0)
++                XCTAssertEqual(AvatarLayout.glyphSide(width: 180, height: dimension, appearance: appearance), 0)
++            }
++            XCTAssertEqual(AvatarLayout.glyphSide(width: 4, height: 180, appearance: appearance), 0)
++            XCTAssertEqual(AvatarLayout.glyphSide(width: 180, height: 8, appearance: appearance), 0)
++        }
++    }
++
++    func testFullListeningScaleAndBobStayInsideAllocatedCanvas() {
++        let canvases = [(160.0, 100.0), (160, 180), (192, 210), (192, 80), (80, 192)]
++        for (width, height) in canvases {
++            for appearance in CompanionAppearance.allCases {
++                let side = AvatarLayout.glyphSide(width: width, height: height, appearance: appearance)
++                for point in boundaryPoints(for: appearance) {
++                    let x = abs(point.x * side * 1.06)
++                    let y = abs(point.y * side * 1.06) + 2
++                    XCTAssertLessThanOrEqual(x, width / 2 - 2 + 0.000001)
++                    XCTAssertLessThanOrEqual(y, height / 2 - 2 + 0.000001)
++                }
++            }
++        }
++    }
++
++    func testOriginalCharactersGrowWithinRepresentativeHomeAndPickerAllocations() {
++        for (width, height) in [(160.0, 140.0), (184, 180), (192, 210)] {
++            for appearance in [CompanionAppearance.pebble, .orbit, .pixel] {
++                let priorSide = min(width, height) * 0.8
++                let side = AvatarLayout.glyphSide(width: width, height: height, appearance: appearance)
++                XCTAssertGreaterThan(side / priorSide, 1.04)
++            }
++        }
++    }
++
++    func testMissingSpriteUsesTheSameBoundsAsPebble() {
++        XCTAssertEqual(AvatarLayout.glyphSide(width: 160, height: 180, appearance: .sprite),
++                       AvatarLayout.glyphSide(width: 160, height: 180, appearance: .pebble))
++    }
++
++    private func boundaryPoints(for appearance: CompanionAppearance) -> [(x: Double, y: Double)] {
++        switch appearance {
++        case .sprite, .pebble:
++            let angle = -7 * Double.pi / 180
++            return [-0.44, 0.44].flatMap { x in
++                [-0.47, 0.47].map { y in
++                    (x * cos(angle) - y * sin(angle), x * sin(angle) + y * cos(angle))
++                }
++            }
++        case .orbit:
++            return (0..<360).flatMap { degrees -> [(x: Double, y: Double)] in
++                let angle = Double(degrees) * Double.pi / 180
++                let center = (x: 0.48 * cos(angle), y: 0.48 * sin(angle))
++                return [(0.4975 * cos(angle), 0.4975 * sin(angle)),
++                        (center.x + 0.05, center.y), (center.x - 0.05, center.y),
++                        (center.x, center.y + 0.05), (center.x, center.y - 0.05)]
++            }
++        case .pixel:
++            return [(-0.44, -0.44), (-0.44, 0.44), (0.44, -0.44), (0.44, 0.44)]
++        }
++    }
++}
+--- /dev/null
 +++ b/Tests/WatchDotCoreTests/AvatarPresentationTests.swift
 @@ -0,0 +1,144 @@
 +import XCTest
@@ -2102,6 +3347,33 @@
 +
 +    private func reply(_ text: String, id: UUID = UUID()) -> ChatMessage {
 +        ChatMessage(id: id, role: .assistant, text: text)
++    }
++}
+--- /dev/null
++++ b/Tests/WatchDotCoreTests/AvatarSelectionTests.swift
+@@ -0,0 +1,24 @@
++import XCTest
++@testable import WatchDotCore
++
++final class AvatarSelectionTests: XCTestCase {
++    func testDownloadedIdentifiersDoNotCollideWithLocalPreferences() {
++        XCTAssertEqual(AvatarSelection.identifier(for: "pebble"), "pet:pebble")
++        XCTAssertEqual(AvatarSelection.petID(from: "pet:pebble"), "pebble")
++        XCTAssertNil(AvatarSelection.petID(from: "sprite"))
++        XCTAssertNil(AvatarSelection.petID(from: "pet:"))
++    }
++
++    func testCatalogRefreshPreservesFocusedPageByIdentity() {
++        XCTAssertEqual(AvatarSelection.page(current: "pet:two", selected: "pet:one",
++            available: ["pet:three", "pet:one", "pet:two"]), "pet:two")
++    }
++
++    func testRemovedPageResolvesToSelectionThenLocalFallback() {
++        XCTAssertEqual(AvatarSelection.page(current: "pet:gone", selected: "sprite",
++            available: ["pebble", "sprite"]), "sprite")
++        XCTAssertEqual(AvatarSelection.page(current: "pet:gone", selected: "pet:missing",
++            available: ["pebble", "orbit"]), "pebble")
++        XCTAssertEqual(AvatarSelection.page(current: "", selected: "", available: []), "pebble")
 +    }
 +}
 --- /dev/null
@@ -2648,6 +3920,966 @@
 +    }
 +}
 --- /dev/null
++++ b/Tests/WatchDotCoreTests/PetCatalogConnectionTests.swift
+@@ -0,0 +1,106 @@
++import XCTest
++@testable import WatchDotCore
++
++@MainActor private final class PetCredentialStore: SignInStore {
++    var record: SignInRecord?
++    var failLoad = false
++    func load() throws -> SignInRecord? {
++        if failLoad { throw SignInError.storage }
++        return record
++    }
++    func save(_ record: SignInRecord) throws { self.record = record }
++}
++
++private actor PetCredentialHTTP: SignInHTTP {
++    let status: Int
++    private(set) var requests = 0
++    init(status: Int = 200) { self.status = status }
++    func send(_ request: URLRequest) async throws -> (Data, Int) {
++        requests += 1
++        return (Data("{\"pets\":[],\"cursor\":null}".utf8), status)
++    }
++}
++
++@MainActor final class PetCatalogConnectionTests: XCTestCase {
++    private func account(subject: String = "fixture-subject", account: String = "fixture-account", revision: String = "one") throws -> SignedInAccount {
++        // Synthetic already-verified vault fixture. No credentials or network are involved.
++        let routing = ["chatgpt_account_id": account, "user_id": "fixture-user"]
++        let claims: [String: Any] = ["sub": subject, "exp": Date().addingTimeInterval(3_600).timeIntervalSince1970,
++                                     "https://api.openai.com/auth": routing, "fixture_revision": revision]
++        let payload = try JSONSerialization.data(withJSONObject: claims).base64URL
++        let token = "e30.\(payload).Zml4dHVyZQ"
++        return SignedInAccount(subject: subject, clientID: "fixture", email: nil, expiresAt: .now.addingTimeInterval(3_600),
++                               idToken: token, accessToken: token)
++    }
++
++    private func fixture(_ http: PetCredentialHTTP) throws -> (PetCredentialStore, ConnectionSession, URL) {
++        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
++        let store = PetCredentialStore()
++        var record = SignInRecord(); record.account = try account(); store.record = record
++        return (store, ConnectionSession(store: store, http: http, chatDirectory: directory), directory)
++    }
++
++    func testTokenRotationKeepsScopeButWorkspaceChangePurges() throws {
++        let (store, connection, directory) = try fixture(PetCredentialHTTP())
++        defer { try? FileManager.default.removeItem(at: directory) }
++        let scope = try XCTUnwrap(connection.petCatalog.scope), generation = connection.petCatalog.generation
++        XCTAssertEqual(scope.count, 64)
++        XCTAssertFalse(scope.contains("fixture"))
++        var record = try XCTUnwrap(store.record); record.account = try account(revision: "two"); store.record = record
++        connection.refresh()
++        XCTAssertEqual(connection.petCatalog.scope, scope)
++        XCTAssertEqual(connection.petCatalog.generation, generation)
++        record.account = try account(account: "another-workspace"); store.record = record
++        connection.refresh()
++        XCTAssertNotEqual(connection.petCatalog.scope, scope)
++        XCTAssertNotEqual(connection.petCatalog.generation, generation)
++        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("PetCatalog/\(scope)").path))
++    }
++
++    func testSignOutClearsScopeAndBackgroundRejectsNetwork() async throws {
++        let http = PetCredentialHTTP()
++        let (_, connection, directory) = try fixture(http)
++        defer { try? FileManager.default.removeItem(at: directory) }
++        connection.enterBackground()
++        do { _ = try await connection.fetchPetCatalog(); XCTFail() }
++        catch { XCTAssertEqual(error as? PetCatalogError, .signedOut) }
++        let requests = await http.requests; XCTAssertEqual(requests, 0)
++        connection.signOutLocally()
++        XCTAssertNil(connection.petCatalog.scope)
++        XCTAssertTrue(connection.petCatalog.items.isEmpty)
++    }
++
++    func testDirectCatalogRequestUsesExistingIdentityAndBounds401Retry() async throws {
++        for status in [200, 401] {
++            let http = PetCredentialHTTP(status: status)
++            let (_, connection, directory) = try fixture(http)
++            defer { try? FileManager.default.removeItem(at: directory) }
++            do {
++                let items = try await connection.fetchPetCatalog()
++                XCTAssertEqual(status, 200); XCTAssertTrue(items.isEmpty)
++            } catch { XCTAssertEqual(status, 401) }
++            let requests = await http.requests
++            XCTAssertEqual(requests, status == 200 ? 1 : 2)
++        }
++    }
++
++    func testTransientKeychainFailureHidesCatalogWithoutDeletingKnownScope() async throws {
++        let (store, connection, directory) = try fixture(PetCredentialHTTP())
++        defer { try? FileManager.default.removeItem(at: directory) }
++        let scope = try XCTUnwrap(connection.petCatalog.scope)
++        let marker = directory.appendingPathComponent("PetCatalog/\(scope)/private-fixture")
++        try Data("synthetic cached content".utf8).write(to: marker)
++        connection.petCatalog.configure { [PetCatalogItem(id: "one", name: "Fixture")] }
++        await connection.petCatalog.refresh()
++        XCTAssertEqual(connection.petCatalog.items.count, 1)
++        store.failLoad = true; connection.refresh()
++        XCTAssertNil(connection.petCatalog.scope)
++        XCTAssertTrue(connection.petCatalog.items.isEmpty)
++        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
++        store.failLoad = false; connection.refresh()
++        XCTAssertEqual(connection.petCatalog.scope, scope)
++        XCTAssertEqual(connection.petCatalog.items.count, 1)
++        connection.signOutLocally()
++        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.deletingLastPathComponent().path))
++    }
++}
+--- /dev/null
++++ b/Tests/WatchDotCoreTests/PetCatalogTests.swift
+@@ -0,0 +1,526 @@
++import XCTest
++@testable import WatchDotCore
++
++private actor CatalogHTTP: SignInHTTP {
++    var responses: [SignInHTTPResponse]
++    var requests: [URLRequest] = []
++    init(_ responses: [SignInHTTPResponse]) { self.responses = responses }
++    func send(_ request: URLRequest) async throws -> (Data, Int) {
++        let result = try await sendWithMetadata(request)
++        return (result.data, result.status)
++    }
++    func sendWithMetadata(_ request: URLRequest) async throws -> SignInHTTPResponse {
++        requests = requests + [request]
++        guard let result = responses.first else { throw PetCatalogError.unavailable }
++        responses = Array(responses.dropFirst())
++        return result
++    }
++}
++
++@MainActor final class PetCatalogTests: XCTestCase {
++    private let credentials = PetCatalogCredentials(accessToken: "synthetic-token", accountID: "fixture-account", scope: "fixture-scope")
++
++    private func page(ids: [String], cursor: String? = nil, extra: [String: Any] = [:]) throws -> SignInHTTPResponse {
++        let entries = ids.map { id -> [String: Any] in
++            ["id": id, "name": " \nFixture \t Avatar  ", "spritesheet_url": "https://cdn.openai.com/synthetic.webp"]
++                .merging(extra) { _, new in new }
++        }
++        let data = try JSONSerialization.data(withJSONObject: ["pets": entries, "cursor": cursor as Any? ?? NSNull()])
++        return SignInHTTPResponse(data: data, status: 200, contentType: .json)
++    }
++
++    func testPaginationPreservesOrderAndUsesBoundAccount() async throws {
++        let http = CatalogHTTP(try [page(ids: ["pet-one"], cursor: "opaque + cursor"), page(ids: ["pet-two"])])
++        let items = try await PetCatalogClient(http: http).fetch(credentials: credentials) { }
++        XCTAssertEqual(items.map(\.id), ["pet-one", "pet-two"])
++        XCTAssertEqual(items.first?.name, "Fixture  Avatar")
++        let requests = await http.requests
++        XCTAssertEqual(requests.count, 2)
++        XCTAssertEqual(requests[0].value(forHTTPHeaderField: "Authorization"), "Bearer synthetic-token")
++        XCTAssertEqual(requests[0].value(forHTTPHeaderField: "ChatGPT-Account-ID"), "fixture-account")
++        XCTAssertFalse(requests[0].httpShouldHandleCookies)
++        XCTAssertEqual(URLComponents(url: requests[1].url!, resolvingAgainstBaseURL: false)?.queryItems?
++            .first(where: { $0.name == "cursor" })?.value, "opaque + cursor")
++    }
++
++    func testRepeatedCursorFailsAndDuplicateIDsKeepFirst() async throws {
++        let repeated = try [page(ids: ["one"], cursor: "same"), page(ids: ["two"], cursor: "same")]
++        do { _ = try await PetCatalogClient(http: CatalogHTTP(repeated)).fetch(credentials: credentials) { }; XCTFail() }
++        catch { XCTAssertEqual(error as? PetCatalogError, .pagination) }
++        let duplicates = try [page(ids: ["one"], cursor: "next"), page(ids: ["one"], extra: ["name": "Replacement"])]
++        let items = try await PetCatalogClient(http: CatalogHTTP(duplicates)).fetch(credentials: credentials) { }
++        XCTAssertEqual(items.map(\.id), ["one"])
++        XCTAssertEqual(items.first?.name, "Fixture  Avatar")
++    }
++
++    func testUnsafeItemsAreSkippedButOversizePagesAreRejected() async throws {
++        var credentialURL = URLComponents(string: "https://cdn.openai.com/x")!
++        credentialURL.user = "fixture-user"
++        let bad = try [page(ids: ["../private"]), page(ids: ["one"], extra: ["spritesheet_url": "https://cdn.openai.com.evil.test/x"]),
++                       page(ids: ["one"], extra: ["spritesheet_url": credentialURL.url!.absoluteString]),
++                       page(ids: ["one"], extra: ["name": String(repeating: "a", count: 1_025)])]
++        for response in bad {
++            let items = try await PetCatalogClient(http: CatalogHTTP([response])).fetch(credentials: credentials) { }
++            XCTAssertTrue(items.isEmpty)
++        }
++        do {
++            _ = try await PetCatalogClient(http: CatalogHTTP([page(ids: (0..<21).map { "pet-\($0)" })])).fetch(credentials: credentials) { }
++            XCTFail()
++        } catch { XCTAssertEqual(error as? PetCatalogError, .pagination) }
++    }
++
++    func testMalformedEntriesDoNotHideValidNeighborsButEnvelopeRemainsStrict() async throws {
++        let entries: [Any] = [["id": "one", "name": "First"], NSNull(), 7, ["id": "bad", "name": 42],
++                              ["id": "unknown", "name": "Unsupported", "spritesheet_url": "https://other.invalid/art"],
++                              ["id": "two", "name": "Last"]]
++        let data = try JSONSerialization.data(withJSONObject: ["pets": entries])
++        let items = try await PetCatalogClient(http: CatalogHTTP([SignInHTTPResponse(data: data, status: 200)]))
++            .fetch(credentials: credentials) { }
++        XCTAssertEqual(items.map(\.id), ["one", "two"])
++        for malformed in ["{}", "{\"pets\":null}", "{\"pets\":{}}", "{\"pets\":[],\"cursor\":42}"] {
++            do {
++                _ = try await PetCatalogClient(http: CatalogHTTP([SignInHTTPResponse(data: Data(malformed.utf8), status: 200)]))
++                    .fetch(credentials: credentials) { }
++                XCTFail()
++            } catch { XCTAssertEqual(error as? PetCatalogError, .invalidResponse) }
++        }
++    }
++
++    func testChallengeAndHTTPFailureNeverDecodeBodyOrRetry() async {
++        for response in [SignInHTTPResponse(data: Data("private failure".utf8), status: 200, clientChallenge: true),
++                         SignInHTTPResponse(data: Data("private failure".utf8), status: 401)] {
++            let http = CatalogHTTP([response])
++            do { _ = try await PetCatalogClient(http: http).fetch(credentials: credentials) { }; XCTFail() }
++            catch { XCTAssertTrue(error is PetCatalogError) }
++            let count = await http.requests.count
++            XCTAssertEqual(count, 1)
++        }
++    }
++
++    func testIdentityIsCheckedAfterResponseBeforeParsing() async throws {
++        var validations = 0
++        do {
++            _ = try await PetCatalogClient(http: CatalogHTTP([page(ids: ["one"])])).fetch(credentials: credentials) {
++                validations += 1
++                if validations == 2 { throw PetCatalogError.identityChanged }
++            }
++            XCTFail()
++        } catch { XCTAssertEqual(error as? PetCatalogError, .identityChanged) }
++    }
++
++    func testExpirySkewAndBoundedDisplayName() async throws {
++        let now = Date(timeIntervalSince1970: 1_000)
++        let item = PetCatalogItem(id: "one", name: "One", imageURL: URL(string: "https://cdn.openai.com/x"), expiresAt: now.addingTimeInterval(60))
++        XCTAssertTrue(item.needsURLRefresh(now: now))
++        XCTAssertFalse(item.needsURLRefresh(now: now.addingTimeInterval(-1)))
++        let http = CatalogHTTP([try page(ids: ["one"], extra: ["name": String(repeating: "a", count: 100)])])
++        let items = try await PetCatalogClient(http: http).fetch(credentials: credentials) { }
++        XCTAssertEqual(items.first?.name.count, 80)
++    }
++}
++
++private actor CatalogImages: PetImageDownloading {
++    let payload: PetImagePayload
++    var hold = false
++    var calls = 0
++    var statuses: [Int] = []
++    var continuations: [CheckedContinuation<PetImagePayload, Error>] = []
++    init() throws {
++        let bytes = Data(base64Encoded: "UklGRpwAAABXRUJQVlA4TI8AAAAv/8XTAQdQwAIVuP8BAEX6/58i+p/63//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//97/8qAAA=")!
++        payload = try PetImageDownloader.validate(data: bytes, mimeType: "image/webp")
++    }
++    func configure(hold: Bool = false, statuses: [Int] = []) { self.hold = hold; self.statuses = statuses }
++    func download(from url: URL) async throws -> PetImagePayload {
++        calls += 1
++        if let status = statuses.first { statuses = Array(statuses.dropFirst()); throw PetImageDownloadError.httpStatus(status) }
++        if hold { return try await withCheckedThrowingContinuation { continuations = continuations + [$0] } }
++        return payload
++    }
++    func release() { let pending = continuations; continuations = []; for continuation in pending { continuation.resume(returning: payload) } }
++}
++
++private actor HeldCacheValidation {
++    private var nextID = 0
++    private var pending: [Int: CheckedContinuation<Bool, Never>] = [:]
++    var calls: Int { nextID }
++    func validate() async -> Bool {
++        nextID += 1
++        let id = nextID
++        return await withCheckedContinuation { pending = pending.merging([id: $0]) { _, new in new } }
++    }
++    func release(_ id: Int, valid: Bool) {
++        let continuation = pending[id]
++        pending = pending.filter { $0.key != id }
++        continuation?.resume(returning: valid)
++    }
++}
++
++@MainActor final class PetCatalogSessionTests: XCTestCase {
++    private func directory() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString) }
++    private func item(_ id: String = "pet-one") -> PetCatalogItem {
++        PetCatalogItem(id: id, name: "Fixture", imageURL: URL(string: "https://cdn.openai.com/synthetic.webp?private-query=fixture"))
++    }
++
++    func testOfflineRestorePersistsNoNetworkURLsAndClearsForeignScope() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages()
++        let session = PetCatalogSession(directory: directory, downloader: images)
++        session.bind(to: "scope-one"); session.configure { [self] in [item()] }
++        await session.refresh(); session.select(id: "pet-one")
++        let url = await session.prepare(id: "pet-one")
++        XCTAssertNotNil(url)
++        let manifest = try String(contentsOf: directory.appendingPathComponent("scope-one/catalog.json"), encoding: .utf8)
++        XCTAssertFalse(manifest.contains("https://")); XCTAssertFalse(manifest.contains("private-query"))
++        let restored = PetCatalogSession(directory: directory, downloader: images)
++        restored.bind(to: "scope-one")
++        XCTAssertEqual(restored.items.map(\.id), ["pet-one"])
++        XCTAssertNil(restored.cachedAsset(for: "pet-one"))
++        let restoredURL = await restored.prepare(id: "pet-one")
++        XCTAssertEqual(restored.cachedAsset(for: "pet-one")?.rowCount, 9)
++        XCTAssertEqual(restoredURL, url)
++        let calls = await images.calls; XCTAssertEqual(calls, 1)
++        restored.bind(to: "scope-two")
++        XCTAssertTrue(restored.items.isEmpty); XCTAssertNil(restored.cachedURL(for: "pet-one"))
++        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("scope-one").path))
++    }
++
++    func testLateDownloadCannotWriteAfterSignOut() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages(); await images.configure(hold: true)
++        let session = PetCatalogSession(directory: directory, downloader: images)
++        session.bind(to: "scope-one"); session.configure { [self] in [item()] }; await session.refresh()
++        let work = Task { await session.prepare(id: "pet-one") }
++        for _ in 0..<100 { if await images.calls == 1 { break }; await Task.yield() }
++        let oldGeneration = session.generation
++        session.bind(to: nil)
++        await images.release()
++        let lateResult = await work.value
++        XCTAssertNil(lateResult)
++        XCTAssertNotEqual(session.generation, oldGeneration)
++        XCTAssertTrue(session.items.isEmpty)
++        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
++    }
++
++    func testImageAndCatalogRequestsAreSingleFlightAndThrottled() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages(); await images.configure(hold: true)
++        let session = PetCatalogSession(directory: directory, downloader: images)
++        var fetches = 0
++        session.bind(to: "scope-one"); session.configure { [self] in fetches += 1; return [item()] }
++        await session.refresh(); await session.refresh(); XCTAssertEqual(fetches, 1)
++        let first = Task { await session.prepare(id: "pet-one") }
++        let second = Task { await session.prepare(id: "pet-one") }
++        for _ in 0..<100 { if await images.calls == 1 { break }; await Task.yield() }
++        await images.release()
++        let a = await first.value, b = await second.value
++        XCTAssertNotNil(a); XCTAssertEqual(a, b)
++        let calls = await images.calls; XCTAssertEqual(calls, 1)
++    }
++
++    func testMissingCDNAssetRefreshesCatalogAndRetriesOnlyOnce() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages(); await images.configure(statuses: [403, 410, 403])
++        let session = PetCatalogSession(directory: directory, downloader: images)
++        var fetches = 0
++        session.bind(to: "scope-one"); session.configure { [self] in fetches += 1; return [item()] }
++        await session.refresh()
++        let result = await session.prepare(id: "pet-one")
++        XCTAssertNil(result)
++        let calls = await images.calls; XCTAssertEqual(calls, 2); XCTAssertEqual(fetches, 2)
++        XCTAssertNotNil(session.errorMessage)
++    }
++
++    func testInitialSignedOutBindingPurgesCrashLeftovers() throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let old = directory.appendingPathComponent("old-scope")
++        try FileManager.default.createDirectory(at: old, withIntermediateDirectories: true)
++        try Data("private fixture".utf8).write(to: old.appendingPathComponent("old"))
++        let session = PetCatalogSession(directory: directory, downloader: try CatalogImages())
++        session.bind(to: nil)
++        XCTAssertFalse(FileManager.default.fileExists(atPath: old.path))
++    }
++
++    func testMaximumCatalogRoundTripsSelectedAvatarAboveOldManifestLimit() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages()
++        let session = PetCatalogSession(directory: directory, downloader: images)
++        let catalog = (0..<1_000).map { index in
++            PetCatalogItem(id: "pet-\(index)-" + String(repeating: "a", count: 115), name: String(repeating: "\u{1D11E}", count: 80),
++                imageURL: URL(string: "https://cdn.openai.com/synthetic.webp"), updatedAt: String(repeating: "v", count: 128))
++        }
++        session.bind(to: "scope-one"); session.configure { catalog }; await session.refresh()
++        session.select(id: catalog[0].id)
++        let original = await session.prepare(id: catalog[0].id)
++        XCTAssertNotNil(original)
++        let manifest = try Data(contentsOf: directory.appendingPathComponent("scope-one/catalog.json"))
++        XCTAssertGreaterThan(manifest.count, 256_000)
++        XCTAssertLessThan(manifest.count, PetCatalogSession.maximumManifestBytes)
++        let restored = PetCatalogSession(directory: directory, downloader: images)
++        restored.bind(to: "scope-one")
++        XCTAssertEqual(restored.items.count, 1_000)
++        XCTAssertNil(restored.cachedURL(for: catalog[0].id))
++        let restoredURL = await restored.prepare(id: catalog[0].id)
++        XCTAssertEqual(restoredURL, original)
++    }
++
++    func testPreCancelledPrepareNeverStartsNetwork() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages()
++        let session = PetCatalogSession(directory: directory, downloader: images)
++        session.bind(to: "scope-one"); session.configure { [self] in [item()] }; await session.refresh()
++        let task = Task { await session.prepare(id: "pet-one") }; task.cancel()
++        let result = await task.value, calls = await images.calls
++        XCTAssertNil(result); XCTAssertEqual(calls, 0)
++    }
++
++    func testSuspendThenResumeAllowsNewRequestWithoutStaleWrite() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages(); await images.configure(hold: true)
++        let session = PetCatalogSession(directory: directory, downloader: images)
++        session.bind(to: "scope-one"); session.configure { [self] in [item()] }; await session.refresh()
++        let first = Task { await session.prepare(id: "pet-one") }
++        for _ in 0..<100 { if await images.calls == 1 { break }; await Task.yield() }
++        session.suspend(); await images.release()
++        let cancelled = await first.value; XCTAssertNil(cancelled)
++        let blocked = await session.prepare(id: "pet-one"); XCTAssertNil(blocked)
++        await images.configure(); session.resume()
++        let retry = await session.prepare(id: "pet-one")
++        XCTAssertNotNil(retry)
++        let calls = await images.calls; XCTAssertEqual(calls, 2)
++    }
++
++    func testOneCancelledWaiterDoesNotCancelOtherAndSoleCancelledWaiterCannotWrite() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages(); await images.configure(hold: true)
++        let session = PetCatalogSession(directory: directory, downloader: images)
++        session.bind(to: "scope-one"); session.configure { [self] in [item(), item("pet-two")] }; await session.refresh()
++        let first = Task { await session.prepare(id: "pet-one") }
++        let second = Task { await session.prepare(id: "pet-one") }
++        for _ in 0..<20 { await Task.yield() }
++        first.cancel(); await images.release()
++        let a = await first.value, b = await second.value
++        XCTAssertNil(a); XCTAssertNotNil(b)
++        let only = Task { await session.prepare(id: "pet-two") }
++        for _ in 0..<100 { if await images.calls == 2 { break }; await Task.yield() }
++        only.cancel()
++        for _ in 0..<20 { await Task.yield() }
++        await images.release()
++        let c = await only.value
++        XCTAssertNil(c); XCTAssertNil(session.cachedURL(for: "pet-two"))
++    }
++
++    func testAtMostTwoDownloadsAndCancelledQueueDoesNotStart() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages(); await images.configure(hold: true)
++        let session = PetCatalogSession(directory: directory, downloader: images)
++        session.bind(to: "scope-one"); session.configure { [self] in [item("one"), item("two"), item("three")] }; await session.refresh()
++        let first = Task { await session.prepare(id: "one") }
++        let second = Task { await session.prepare(id: "two") }
++        for _ in 0..<100 { if await images.calls == 2 { break }; await Task.yield() }
++        let third = Task { await session.prepare(id: "three") }
++        for _ in 0..<20 { await Task.yield() }
++        let before = await images.calls; XCTAssertEqual(before, 2)
++        third.cancel()
++        let cancelled = await third.value; XCTAssertNil(cancelled)
++        await images.release()
++        let a = await first.value, b = await second.value
++        XCTAssertNotNil(a); XCTAssertNotNil(b)
++        let after = await images.calls; XCTAssertEqual(after, 2)
++    }
++
++    func testCacheBudgetKeepsSelectedAvatarAndEvictsOldUnselectedAvatar() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages()
++        let bytes = await images.payload.data.count
++        let session = PetCatalogSession(directory: directory, downloader: images, maximumCacheBytes: bytes * 2)
++        session.bind(to: "scope-one"); session.configure { [self] in [item("one"), item("two"), item("three")] }; await session.refresh()
++        _ = await session.prepare(id: "one"); session.select(id: "one")
++        _ = await session.prepare(id: "two"); _ = await session.prepare(id: "three")
++        XCTAssertNotNil(session.cachedURL(for: "one")); XCTAssertNil(session.cachedURL(for: "two"))
++        XCTAssertNotNil(session.cachedURL(for: "three"))
++        let files = try FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent("scope-one").path)
++        XCTAssertEqual(files.filter { $0.hasSuffix(".atlas") }.count, 2)
++    }
++
++    func testCorruptCachedImageIsRejectedAndRemovedOnRestore() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages()
++        let session = PetCatalogSession(directory: directory, downloader: images)
++        session.bind(to: "scope-one"); session.configure { [self] in [item()] }; await session.refresh()
++        let prepared = await session.prepare(id: "pet-one")
++        let url = try XCTUnwrap(prepared)
++        try Data("invalid fixture".utf8).write(to: url)
++        let restored = PetCatalogSession(directory: directory, downloader: images)
++        restored.bind(to: "scope-one")
++        XCTAssertNil(restored.cachedURL(for: "pet-one"))
++        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
++    }
++
++    func testExpiredURLRefreshesBeforeAnyImageDownload() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages()
++        let session = PetCatalogSession(directory: directory, downloader: images)
++        var fetches = 0
++        session.bind(to: "scope-one"); session.configure { [self] in
++            fetches += 1
++            return fetches == 1 ? [PetCatalogItem(id: "pet-one", name: "Fixture", imageURL: item().imageURL,
++                                                expiresAt: .distantPast)] : [item()]
++        }
++        await session.refresh()
++        let url = await session.prepare(id: "pet-one")
++        XCTAssertNotNil(url); XCTAssertEqual(fetches, 2)
++        let calls = await images.calls; XCTAssertEqual(calls, 1)
++    }
++
++    func testAutomaticRefreshFailureBackoffAndExplicitRetry() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        var clock = Date(timeIntervalSince1970: 1_000), fetches = 0
++        let session = PetCatalogSession(directory: directory, downloader: try CatalogImages(), now: { clock })
++        session.bind(to: "scope-one"); session.configure { fetches += 1; throw PetCatalogError.unavailable }
++        await session.refresh(); await session.refresh()
++        _ = await session.prepare(id: "pet-one")
++        XCTAssertEqual(fetches, 1)
++        clock = clock.addingTimeInterval(31)
++        await session.refresh(); XCTAssertEqual(fetches, 2)
++        await session.refresh(retry: true); XCTAssertEqual(fetches, 3)
++    }
++
++    func testNewImageAttemptClearsOldErrorAndSuccessLeavesNoError() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages(); await images.configure(statuses: [500])
++        let session = PetCatalogSession(directory: directory, downloader: images)
++        session.bind(to: "scope-one"); session.configure { [self] in [item()] }; await session.refresh()
++        _ = await session.prepare(id: "pet-one"); XCTAssertNotNil(session.errorMessage)
++        await images.configure(hold: true)
++        let retry = Task { await session.prepare(id: "pet-one") }
++        for _ in 0..<100 { if await images.calls == 2 { break }; await Task.yield() }
++        XCTAssertNil(session.errorMessage)
++        await images.release()
++        let url = await retry.value
++        XCTAssertNotNil(url); XCTAssertNil(session.errorMessage)
++    }
++
++    func testSelectedCachedAvatarWarmsWithoutNetworkAndNeverPublishesUnverifiedURL() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages()
++        let session = PetCatalogSession(directory: directory, downloader: images)
++        session.bind(to: "scope-one"); session.configure { [self] in [item()] }; await session.refresh()
++        _ = await session.prepare(id: "pet-one"); session.select(id: "pet-one")
++        let restored = PetCatalogSession(directory: directory, downloader: images)
++        restored.bind(to: "scope-one")
++        XCTAssertNil(restored.cachedURL(for: "pet-one"))
++        for _ in 0..<1_000 {
++            if restored.cachedURL(for: "pet-one") != nil { break }
++            try await Task.sleep(for: .milliseconds(1))
++        }
++        XCTAssertNotNil(restored.cachedURL(for: "pet-one"))
++        let calls = await images.calls; XCTAssertEqual(calls, 1)
++    }
++
++    func testSameLengthCorruptAssetDoesNotEscapeDeferredIntegrityValidation() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages()
++        let session = PetCatalogSession(directory: directory, downloader: images)
++        session.bind(to: "scope-one"); session.configure { [self] in [item()] }; await session.refresh()
++        let prepared = await session.prepare(id: "pet-one")
++        let url = try XCTUnwrap(prepared)
++        session.select(id: "pet-one")
++        let bytes = try Data(contentsOf: url)
++        try Data(repeating: 0, count: bytes.count).write(to: url)
++        let restored = PetCatalogSession(directory: directory, downloader: images)
++        restored.bind(to: "scope-one")
++        XCTAssertNil(restored.cachedURL(for: "pet-one"))
++        for _ in 0..<1_000 {
++            if !FileManager.default.fileExists(atPath: url.path) { break }
++            try await Task.sleep(for: .milliseconds(1))
++        }
++        XCTAssertNil(restored.cachedURL(for: "pet-one"))
++        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
++        let calls = await images.calls; XCTAssertEqual(calls, 1)
++    }
++    func testDelayedInvalidWarmResultCannotDeleteRepairedSameFilename() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages()
++        let original = PetCatalogSession(directory: directory, downloader: images)
++        original.bind(to: "scope-one"); original.configure { [self] in [item()] }; await original.refresh()
++        let saved = await original.prepare(id: "pet-one")
++        let url = try XCTUnwrap(saved)
++        original.select(id: "pet-one")
++        let bytes = try Data(contentsOf: url)
++        try Data(repeating: 0, count: bytes.count).write(to: url)
++        let validation = HeldCacheValidation()
++        let restored = PetCatalogSession(directory: directory, downloader: images,
++            cacheValidator: { _ in await validation.validate() })
++        restored.bind(to: "scope-one"); restored.configure { [self] in [item()] }
++        for _ in 0..<1_000 { if await validation.calls == 1 { break }; await Task.yield() }
++        let requested = Task { await restored.prepare(id: "pet-one") }
++        for _ in 0..<1_000 { if await validation.calls == 2 { break }; await Task.yield() }
++        let calls = await validation.calls; XCTAssertEqual(calls, 2)
++        await validation.release(2, valid: false)
++        let repaired = await requested.value
++        XCTAssertEqual(repaired, url)
++        await validation.release(1, valid: false)
++        for _ in 0..<100 { await Task.yield() }
++        XCTAssertEqual(restored.cachedURL(for: "pet-one"), url)
++        XCTAssertEqual(try Data(contentsOf: url), bytes)
++        XCTAssertNil(restored.errorMessage)
++    }
++
++    func testDelayedSuccessfulWarmResultDoesNotPublishEvictedFile() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages()
++        let original = PetCatalogSession(directory: directory, downloader: images)
++        original.bind(to: "scope-one"); original.configure { [self] in [item(), item("pet-two")] }
++        await original.refresh()
++        let saved = await original.prepare(id: "pet-one")
++        let url = try XCTUnwrap(saved), byteCount = try Data(contentsOf: url).count
++        original.select(id: "pet-one")
++        let validation = HeldCacheValidation()
++        let restored = PetCatalogSession(directory: directory, downloader: images, maximumCacheBytes: byteCount,
++            cacheValidator: { _ in await validation.validate() })
++        restored.bind(to: "scope-one"); restored.configure { [self] in [item(), item("pet-two")] }
++        for _ in 0..<1_000 { if await validation.calls == 1 { break }; await Task.yield() }
++        restored.select(id: nil)
++        let next = await restored.prepare(id: "pet-two")
++        XCTAssertNotNil(next); XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
++        let revision = restored.cacheRevision
++        await validation.release(1, valid: true)
++        for _ in 0..<100 { await Task.yield() }
++        XCTAssertNil(restored.cachedURL(for: "pet-one"))
++        XCTAssertEqual(restored.cacheRevision, revision)
++        XCTAssertNil(restored.errorMessage)
++    }
++
++    func testFileRemovedAfterMetadataLoadIsRecoveredAsCacheMiss() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages()
++        let original = PetCatalogSession(directory: directory, downloader: images)
++        original.bind(to: "scope-one"); original.configure { [self] in [item()] }; await original.refresh()
++        let saved = await original.prepare(id: "pet-one")
++        let url = try XCTUnwrap(saved)
++        let restored = PetCatalogSession(directory: directory, downloader: images)
++        restored.bind(to: "scope-one"); restored.configure { [self] in [item()] }
++        try FileManager.default.removeItem(at: url)
++        let repaired = await restored.prepare(id: "pet-one")
++        XCTAssertNotNil(repaired); XCTAssertNil(restored.errorMessage)
++        let calls = await images.calls; XCTAssertEqual(calls, 2)
++    }
++
++    func testValidatedFileDisappearingInSameSessionIsDownloadedAgain() async throws {
++        let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
++        let images = try CatalogImages()
++        let session = PetCatalogSession(directory: directory, downloader: images)
++        session.bind(to: "scope-one"); session.configure { [self] in [item()] }; await session.refresh()
++        let saved = await session.prepare(id: "pet-one")
++        let url = try XCTUnwrap(saved)
++        XCTAssertEqual(session.cachedURL(for: "pet-one"), url)
++        try FileManager.default.removeItem(at: url)
++        XCTAssertNil(session.cachedURL(for: "pet-one"))
++        let repaired = await session.prepare(id: "pet-one")
++        XCTAssertEqual(repaired, url)
++        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
++        XCTAssertNil(session.errorMessage)
++        let calls = await images.calls; XCTAssertEqual(calls, 2)
++    }
++
++}
+--- /dev/null
++++ b/Tests/WatchDotCoreTests/PetImageDownloaderTests.swift
+@@ -0,0 +1,224 @@
++import CoreGraphics
++import ImageIO
++import XCTest
++@testable import WatchDotCore
++
++private final class PetImageProtocol: URLProtocol, @unchecked Sendable {
++    struct Response: Sendable {
++        let status: Int
++        let headers: [String: String]
++        let data: Data
++        let error: URLError?
++    }
++    private final class State: @unchecked Sendable {
++        let lock = NSLock()
++        var response = Response(status: 200, headers: [:], data: Data(), error: nil)
++        var requests: [URLRequest] = []
++    }
++    private static let state = State()
++    static func configure(status: Int = 200, headers: [String: String] = ["Content-Type": "image/png"],
++                          data: Data = Data(), error: URLError? = nil) {
++        state.lock.lock(); defer { state.lock.unlock() }
++        state.response = Response(status: status, headers: headers, data: data, error: error)
++        state.requests = []
++    }
++    static var requests: [URLRequest] {
++        state.lock.lock(); defer { state.lock.unlock() }
++        return state.requests
++    }
++    override class func canInit(with request: URLRequest) -> Bool { true }
++    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
++    override func startLoading() {
++        Self.state.lock.lock()
++        let response = Self.state.response
++        Self.state.requests = Self.state.requests + [request]
++        Self.state.lock.unlock()
++        if let error = response.error { client?.urlProtocol(self, didFailWithError: error); return }
++        let http = HTTPURLResponse(url: request.url!, statusCode: response.status,
++                                   httpVersion: "HTTP/1.1", headerFields: response.headers)!
++        client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
++        client?.urlProtocol(self, didLoad: response.data)
++        client?.urlProtocolDidFinishLoading(self)
++    }
++    override func stopLoading() {}
++}
++
++@MainActor final class PetImageDownloaderTests: XCTestCase {
++    private let url = URL(string: "https://cdn.openai.com/fixture.png")!
++    private func downloader() -> PetImageDownloader { PetImageDownloader(protocolClasses: [PetImageProtocol.self]) }
++
++    func testURLAllowlistRejectsAlternativeOriginsAndCredentials() throws {
++        for value in ["https://cdn.openai.com/a", "https://CDN.OPENAI.COM:443/a?version=2"] {
++            XCTAssertNoThrow(try PetImageDownloader.validateURL(URL(string: value)!))
++        }
++        for value in ["http://cdn.openai.com/a", "https://cdn.openai.com.evil.test/a",
++                      "https://other.openai.com/a", "https://cdn.openai.com:444/a",
++                      "https://cdn.openai.com/a#fragment", "file:///a", "https://cdn.openai.com./a"] {
++            XCTAssertThrowsError(try PetImageDownloader.validateURL(URL(string: value)!)) {
++                XCTAssertEqual($0 as? PetImageDownloadError, .invalidURL)
++            }
++        }
++    }
++
++    func testURLAllowlistRejectsUserInformation() throws {
++        for password in [nil, "fixture-password"] {
++            var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
++            components.user = "fixture-user"
++            components.password = password
++            XCTAssertThrowsError(try PetImageDownloader.validateURL(try XCTUnwrap(components.url))) {
++                XCTAssertEqual($0 as? PetImageDownloadError, .invalidURL)
++            }
++        }
++    }
++
++    func testBothKnownPNGContractsAndMIMENormalization() throws {
++        for height in [1872, 2288] {
++            let data = try png(height: height)
++            let payload = try PetImageDownloader.validate(data: data, mimeType: " IMAGE/PNG; charset=binary ")
++            XCTAssertEqual(payload.data, data)
++            XCTAssertEqual(payload.width, 1536)
++            XCTAssertEqual(payload.height, height)
++            XCTAssertEqual(payload.rowCount, height / 208)
++            XCTAssertEqual(payload.format, .png)
++        }
++    }
++
++    func testSyntheticWebPAndAnimatedWebP() throws {
++        // Original solid-color fixtures generated with libwebp, no service artwork.
++        let still = Data(base64Encoded: "UklGRpwAAABXRUJQVlA4TI8AAAAv/8XTAQdQwAIVuP8BAEX6/58i+p/63//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//973//+9///ve///3vf//73//+97///e9///vf//73v//97/8qAAA=")!
++        let payload = try PetImageDownloader.validate(data: still, mimeType: "image/webp")
++        XCTAssertEqual(payload.format, .webP)
++        XCTAssertEqual(payload.rowCount, 9)
++        let animation = Data(base64Encoded: "UklGRogAAABXRUJQVlA4WAoAAAACAAAABwAABwAAQU5JTQYAAAD/////AABBTk1GKgAAAAAAAAAAAAcAAAcAAGQAAABWUDhMEQAAAC8HwAEAB1DAAhW4/4GI6H8AAEFOTUYqAAAAAAAAAAAABwAABwAAZAAAAFZQOEwRAAAALwfAAQAHUMACF6j/gYjofwAA")!
++        XCTAssertThrowsError(try PetImageDownloader.validate(data: animation, mimeType: "image/webp")) {
++            XCTAssertEqual($0 as? PetImageDownloadError, .animatedImage)
++        }
++    }
++
++    func testWrongDimensionsMIMEMagicTruncationAndSizeAreRejected() throws {
++        let good = try png()
++        let cases: [(Data, String, PetImageDownloadError?)] = [
++            (try png(width: 1, height: 1), "image/png", .dimensions),
++            (good, "image/webp", .unsupportedFormat), (good, "text/html", .unsupportedFormat),
++            (Data("not an image".utf8), "image/png", .unsupportedFormat),
++            (good.prefix(40), "image/png", nil),
++            (Data(repeating: 0, count: PetImageDownloader.maximumBytes + 1), "image/png", .tooLarge)
++        ]
++        for (data, mime, expected) in cases {
++            XCTAssertThrowsError(try PetImageDownloader.validate(data: data, mimeType: mime)) {
++                XCTAssertNotNil($0 as? PetImageDownloadError)
++                if let expected { XCTAssertEqual($0 as? PetImageDownloadError, expected) }
++            }
++        }
++    }
++
++    func testDownloadNeverSendsCredentialsAndReturnsValidatedImage() async throws {
++        PetImageProtocol.configure(data: try png())
++        let payload = try await downloader().download(from: url)
++        XCTAssertEqual(payload.rowCount, 9)
++        let request = try XCTUnwrap(PetImageProtocol.requests.first)
++        for header in ["Authorization", "Cookie", "ChatGPT-Account-Id"] {
++            XCTAssertNil(request.value(forHTTPHeaderField: header))
++        }
++        XCTAssertFalse(request.httpShouldHandleCookies)
++        XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
++        XCTAssertEqual(request.timeoutInterval, 30)
++        XCTAssertEqual(PetImageProtocol.requests.count, 1)
++    }
++
++    func testHTTPFailuresPreserveStatusWithoutRetry() async throws {
++        for status in [302, 403, 404, 410, 500] {
++            PetImageProtocol.configure(status: status, headers: ["Location": "https://elsewhere.test/secret"],
++                                       data: Data("private response body".utf8))
++            await expect(.httpStatus(status)) { try await self.downloader().download(from: self.url) }
++            XCTAssertEqual(PetImageProtocol.requests.count, 1)
++        }
++    }
++
++    func testRedirectDelegateRefusesDestination() async {
++        let session = URLSession(configuration: .ephemeral)
++        defer { session.invalidateAndCancel() }
++        let result = await withCheckedContinuation { continuation in
++            PetImageNoRedirects().urlSession(session, task: session.dataTask(with: url),
++                willPerformHTTPRedirection: HTTPURLResponse(url: url, statusCode: 302, httpVersion: nil,
++                                                            headerFields: nil)!,
++                newRequest: URLRequest(url: URL(string: "https://elsewhere.test/")!)) {
++                    continuation.resume(returning: $0)
++                }
++        }
++        XCTAssertNil(result)
++    }
++
++    func testKnownAndUnknownOversizeResponsesAreBounded() async {
++        PetImageProtocol.configure(headers: ["Content-Type": "image/png", "Content-Length": "8388609"])
++        await expect(.tooLarge) { try await self.downloader().download(from: self.url) }
++        PetImageProtocol.configure(data: Data(repeating: 0, count: PetImageDownloader.maximumBytes + 1))
++        await expect(.tooLarge) { try await self.downloader().download(from: self.url) }
++    }
++
++    func testChallengeUnsupportedContentAndNetworkErrorsStaySafe() async {
++        PetImageProtocol.configure(headers: ["Content-Type": "image/png", "cf-mitigated": "challenge"])
++        await expect(.unsupportedFormat) { try await self.downloader().download(from: self.url) }
++        PetImageProtocol.configure(headers: ["Content-Type": "text/html"])
++        await expect(.unsupportedFormat) { try await self.downloader().download(from: self.url) }
++        PetImageProtocol.configure(error: URLError(.serverCertificateUntrusted))
++        await expect(.tls) { try await self.downloader().download(from: self.url) }
++        PetImageProtocol.configure(error: URLError(.timedOut))
++        await expect(.unavailable) { try await self.downloader().download(from: self.url) }
++    }
++
++    func testCancellationRemainsCancellation() async {
++        PetImageProtocol.configure(error: URLError(.cancelled))
++        do { _ = try await downloader().download(from: url); XCTFail("Expected cancellation") }
++        catch { XCTAssertTrue(error is CancellationError) }
++    }
++
++    func testInvalidURLAndPriorCancellationNeverMakeRequests() async {
++        PetImageProtocol.configure()
++        await expect(.invalidURL) {
++            try await self.downloader().download(from: URL(string: "https://example.test/private")!)
++        }
++        let task = Task { @MainActor in
++            withUnsafeCurrentTask { $0?.cancel() }
++            return try await downloader().download(from: url)
++        }
++        do { _ = try await task.value; XCTFail("Expected cancellation") }
++        catch { XCTAssertTrue(error is CancellationError) }
++        XCTAssertTrue(PetImageProtocol.requests.isEmpty)
++    }
++
++    func testAnimatedPNGIsRejected() throws {
++        let still = try png(width: 8, height: 8)
++        let source = try XCTUnwrap(CGImageSourceCreateWithData(still as CFData, nil))
++        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
++        let data = NSMutableData()
++        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, "public.png" as CFString, 2, nil))
++        let properties = [kCGImagePropertyPNGDictionary: [kCGImagePropertyAPNGDelayTime: 0.1]] as CFDictionary
++        CGImageDestinationAddImage(destination, image, properties)
++        CGImageDestinationAddImage(destination, image, properties)
++        XCTAssertTrue(CGImageDestinationFinalize(destination))
++        XCTAssertThrowsError(try PetImageDownloader.validate(data: data as Data, mimeType: "image/png")) {
++            XCTAssertEqual($0 as? PetImageDownloadError, .animatedImage)
++        }
++    }
++
++    private func expect(_ expected: PetImageDownloadError,
++                        operation: () async throws -> PetImagePayload) async {
++        do { _ = try await operation(); XCTFail("Expected failure") }
++        catch { XCTAssertEqual(error as? PetImageDownloadError, expected) }
++    }
++
++    private func png(width: Int = 1536, height: Int = 1872) throws -> Data {
++        let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
++            bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
++            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
++        context.setFillColor(CGColor(red: 0.25, green: 0.5, blue: 0.75, alpha: 1))
++        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
++        let image = try XCTUnwrap(context.makeImage())
++        let data = NSMutableData()
++        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil))
++        CGImageDestinationAddImage(destination, image, nil)
++        XCTAssertTrue(CGImageDestinationFinalize(destination))
++        return data as Data
++    }
++}
+--- /dev/null
++++ b/Tests/WatchDotCoreTests/PetWebPDecoderTests.swift
+@@ -0,0 +1,92 @@
++import CoreGraphics
++import ImageIO
++import XCTest
++import libwebp
++@testable import WatchDotCore
++
++@MainActor final class PetWebPDecoderTests: XCTestCase {
++    func testForcedFallbackProducesNativePNGForBothAtlasContracts() async throws {
++        let validator = PetImageValidator(supportsNativeWebP: false)
++        for height in [1872, 2288] {
++            let webp = try fixture(height: height)
++            let payload = try await validator.validate(data: webp, mimeType: "image/webp")
++            XCTAssertEqual(payload.format, .png)
++            XCTAssertEqual(payload.mimeType, "image/png")
++            XCTAssertEqual(payload.width, 1536)
++            XCTAssertEqual(payload.rowCount, height / 208)
++            XCTAssertLessThanOrEqual(payload.data.count, PetImageDownloader.maximumBytes)
++            XCTAssertNoThrow(try PetImageDownloader.validate(data: payload.data, mimeType: payload.mimeType))
++        }
++    }
++
++    func testFallbackPreservesStraightAlphaWithoutDarkening() async throws {
++        let validator = PetImageValidator(supportsNativeWebP: false)
++        let payload = try await validator.validate(data: fixture(color: [128, 64, 32, 128]), mimeType: "image/webp")
++        let source = try XCTUnwrap(CGImageSourceCreateWithData(payload.data as CFData, nil))
++        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
++        var pixel = [UInt8](repeating: 0, count: 4)
++        try pixel.withUnsafeMutableBytes { bytes in
++            let context = try XCTUnwrap(CGContext(data: bytes.baseAddress, width: 1, height: 1,
++                bitsPerComponent: 8, bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(),
++                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
++            context.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: 1))
++        }
++        XCTAssertEqual(pixel, [64, 32, 16, 128])
++    }
++
++    func testNativeRuntimeRetainsWebPAndPNGDoesNotUseFallback() async throws {
++        let webp = try fixture()
++        let native = PetImageValidator(supportsNativeWebP: true)
++        let unchanged = try await native.validate(data: webp, mimeType: "image/webp")
++        XCTAssertEqual(unchanged.data, webp)
++        XCTAssertEqual(unchanged.format, .webP)
++        let fallback = PetImageValidator(supportsNativeWebP: false)
++        let png = try await fallback.validate(data: webp, mimeType: "image/webp")
++        let second = try await fallback.validate(data: png.data, mimeType: "image/png")
++        XCTAssertEqual(second.data, png.data)
++    }
++
++    func testMalformedOversizedAnimatedAndWrongDimensionsAreRejected() throws {
++        let animation = Data(base64Encoded: "UklGRogAAABXRUJQVlA4WAoAAAACAAAABwAABwAAQU5JTQYAAAD/////AABBTk1GKgAAAAAAAAAAAAcAAAcAAGQAAABWUDhMEQAAAC8HwAEAB1DAAhW4/4GI6H8AAEFOTUYqAAAAAAAAAAAABwAABwAAZAAAAFZQOEwRAAAALwfAAQAHUMACF6j/gYjofwAA")!
++        let valid = try fixture()
++        let cases: [(Data, PetImageDownloadError)] = [
++            (try fixture(width: 8, height: 8), .dimensions),
++            (animation, .animatedImage),
++            (valid.dropLast(12), .invalidImage),
++            (Data("RIFF1234WEBP".utf8), .invalidImage),
++            (Data("not an image".utf8), .unsupportedFormat),
++            (Data(repeating: 0, count: PetImageDownloader.maximumBytes + 1), .tooLarge)
++        ]
++        for (data, expected) in cases {
++            XCTAssertThrowsError(try PetWebPDecoder.decode(data)) {
++                XCTAssertEqual($0 as? PetImageDownloadError, expected)
++            }
++        }
++    }
++
++    func testForcedFallbackStillRequiresMIMEAgreementAndPreservesCancellation() async throws {
++        let validator = PetImageValidator(supportsNativeWebP: false)
++        let data = try fixture()
++        do { _ = try await validator.validate(data: data, mimeType: "image/png"); XCTFail("Must reject MIME mismatch") }
++        catch { XCTAssertEqual(error as? PetImageDownloadError, .unsupportedFormat) }
++        let task = Task {
++            withUnsafeCurrentTask { $0?.cancel() }
++            return try await validator.validate(data: data, mimeType: "image/webp")
++        }
++        do { _ = try await task.value; XCTFail("Must preserve cancellation") }
++        catch { XCTAssertTrue(error is CancellationError) }
++    }
++
++    private func fixture(width: Int = 1536, height: Int = 1872,
++                         color: [UInt8] = [64, 128, 192, 255]) throws -> Data {
++        let pixels = Array(repeating: color, count: width * height).flatMap { $0 }
++        var encoded: UnsafeMutablePointer<UInt8>?
++        let length = pixels.withUnsafeBufferPointer {
++            WebPEncodeLosslessRGBA($0.baseAddress, Int32(width), Int32(height), Int32(width * 4), &encoded)
++        }
++        let output = try XCTUnwrap(encoded)
++        defer { WebPFree(output) }
++        XCTAssertGreaterThan(length, 0)
++        return Data(bytes: output, count: length)
++    }
++}
+--- /dev/null
 +++ b/Tests/WatchDotCoreTests/SensitiveContentPolicyTests.swift
 @@ -0,0 +1,15 @@
 +import XCTest
@@ -2662,6 +4894,50 @@
 +                        luminanceReduced: dimmed, privacyRedacted: redacted), active && !dimmed && !redacted)
 +                }
 +            }
++        }
++    }
++}
+--- /dev/null
++++ b/Tests/WatchDotCoreTests/SpriteAtlasLayoutTests.swift
+@@ -0,0 +1,41 @@
++import XCTest
++@testable import WatchDotCore
++
++final class SpriteAtlasLayoutTests: XCTestCase {
++    func testOnlyKnownNineAndElevenRowAtlasesAreAccepted() {
++        XCTAssertNotNil(SpriteAtlasLayout(width: 1536, height: 1872))
++        XCTAssertNotNil(SpriteAtlasLayout(width: 1536, height: 2288))
++        for dimensions in [(0, 0), (1535, 2288), (1536, 2080), (3072, 4576), (1536, Int.max)] {
++            XCTAssertNil(SpriteAtlasLayout(width: dimensions.0, height: dimensions.1))
++        }
++    }
++
++    func testEveryUsedFrameFitsBothContracts() throws {
++        for height in [1872, 2288] {
++            let atlas = try XCTUnwrap(SpriteAtlasLayout(width: 1536, height: height))
++            for animation in AvatarAnimation.allCases {
++                XCTAssertLessThanOrEqual((animation.row + 1) * AvatarAnimation.cellHeight, atlas.height)
++                XCTAssertLessThanOrEqual(animation.durationsMilliseconds.count * AvatarAnimation.cellWidth, atlas.width)
++            }
++        }
++    }
++
++    func testGlobalUnionHasTwoPixelMargin() throws {
++        let atlas = try XCTUnwrap(SpriteAtlasLayout(width: 1536, height: 2288))
++        let crop = try XCTUnwrap(atlas.crop(minX: 20, minY: 5, maxX: 172, maxY: 203))
++        XCTAssertEqual(crop.x, 18)
++        XCTAssertEqual(crop.y, 3)
++        XCTAssertEqual(crop.width, 156)
++        XCTAssertEqual(crop.height, 202)
++    }
++
++    func testMarginStopsAtCellEdgesAndRejectsEmptyOrInvalidBounds() throws {
++        let atlas = try XCTUnwrap(SpriteAtlasLayout(width: 1536, height: 1872))
++        let crop = try XCTUnwrap(atlas.crop(minX: 0, minY: 0, maxX: 192, maxY: 208))
++        XCTAssertEqual(crop.width, 192)
++        XCTAssertEqual(crop.height, 208)
++        for bounds in [(0, 0, 0, 0), (-1, 0, 10, 10), (0, 0, 193, 208), (0, 0, 192, 209)] {
++            XCTAssertNil(atlas.crop(minX: bounds.0, minY: bounds.1, maxX: bounds.2, maxY: bounds.3))
 +        }
 +    }
 +}
@@ -3129,7 +5405,7 @@
 +}
 --- /dev/null
 +++ b/WatchDotApp/AvatarConversationView.swift
-@@ -0,0 +1,402 @@
+@@ -0,0 +1,406 @@
 +import SwiftUI
 +import WatchKit
 +
@@ -3139,6 +5415,7 @@
 +    @Environment(\.redactionReasons) private var redactionReasons
 +    @ObservedObject var session: ConversationSession
 +    @ObservedObject var connection: ConnectionSession
++    @ObservedObject private var catalog: PetCatalogSession
 +    @StateObject private var voice: VoiceInputSession
 +    @AppStorage("companion.appearance") private var appearanceID = "sprite"
 +    @State private var presentation: AvatarPresentation
@@ -3166,6 +5443,7 @@
 +         isSettingsPresented: Bool = false, showSettings: @escaping () -> Void) {
 +        self.session = session
 +        self.connection = connection
++        _catalog = ObservedObject(wrappedValue: connection.petCatalog)
 +        self.isSettingsPresented = isSettingsPresented
 +        self.showSettings = showSettings
 +        _presentation = State(initialValue: AvatarPresentation(baselineReplies: session.receivedReplies))
@@ -3179,11 +5457,6 @@
 +                Text("DEMO").font(.caption2).foregroundStyle(.orange)
 +            }
 +            avatarButton.frame(maxWidth: .infinity, maxHeight: .infinity)
-+            if !isQuiet && isContentVisible {
-+                Text(appearance.displayName(spriteName: session.transportName))
-+                    .font(.footnote.weight(.medium)).lineLimit(1)
-+                    .accessibilityIdentifier("avatar.name")
-+            }
 +            status
 +            if captureBusy {
 +                Button("Cancel") { voice.cancel(); noteActivity() }
@@ -3209,7 +5482,7 @@
 +            NavigationStack {
 +                switch selected {
 +                case .menu:
-+                    AvatarMenuView(session: session, appearanceID: $appearanceID,
++                    AvatarMenuView(session: session, catalog: catalog, appearanceID: $appearanceID,
 +                        textTitle: voiceFailure?.transcript == nil ? "Type a Message" : textInputTitle,
 +                        showTextInput: openTextInput,
 +                        showSettings: { settingsAfterDismiss = true; destination = nil },
@@ -3287,6 +5560,9 @@
 +        .task(id: session.conversationID) {
 +            if scenePhase == .active, !session.isRealConnection { session.resumeAutomatically() }
 +        }
++        .task(id: appearanceID) {
++            catalog.select(id: AvatarSelection.petID(from: appearanceID))
++        }
 +    }
 +
 +    private var appearance: CompanionAppearance {
@@ -3300,7 +5576,11 @@
 +            else if session.isRealConnection { voiceFailure = nil; voice.tap() }
 +            else { openTextInput() }
 +        } label: {
-+            CompanionAvatar(appearance: appearance, animation: avatarAnimation, level: voice.level)
++            CompanionAvatar(appearance: appearance, animation: avatarAnimation, level: voice.level,
++                atlasURL: AvatarSelection.petID(from: appearanceID).flatMap { catalog.cachedURL(for: $0) },
++                playbackActive: isContentVisible && !sheetVisible && presentation.visibleReplies.isEmpty)
++                .id(catalog.generation)
++                .frame(maxWidth: .infinity, maxHeight: .infinity)
 +                .contentShape(Rectangle())
 +        }
 +        .buttonStyle(.plain)
@@ -3410,7 +5690,7 @@
 +    }
 +
 +    private var voiceAccessibility: VoiceAccessibility {
-+        VoiceAccessibility(phase: voice.phase, name: appearance.displayName(spriteName: session.transportName),
++        VoiceAccessibility(phase: voice.phase, name: session.transportName,
 +            elapsed: voice.elapsed, recoveryReason: session.canSend ? nil : recovery?.reason,
 +            isRealConnection: session.isRealConnection)
 +    }
@@ -3534,26 +5814,36 @@
 +}
 --- /dev/null
 +++ b/WatchDotApp/AvatarPickerView.swift
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,136 @@
 +import SwiftUI
 +
 +struct AvatarPickerView: View {
++    @Environment(\.scenePhase) private var scenePhase
 +    @Binding var selection: String
++    @ObservedObject var catalog: PetCatalogSession
 +    let spriteName: String
 +    let onChoose: () -> Void
-+    @State private var preview: CompanionAppearance = .pebble
++    @State private var preview = ""
 +
-+    private var selected: CompanionAppearance {
-+        .resolve(savedID: selection, spriteAvailable: CompanionAvatar.spriteAvailable)
++    private var localAppearances: [CompanionAppearance] {
++        CompanionAppearance.available(spriteAvailable: CompanionAvatar.spriteAvailable)
++    }
++    private var identifiers: [String] {
++        catalog.items.map { AvatarSelection.identifier(for: $0.id) } + localAppearances.map(\.rawValue)
 +    }
 +
 +    var body: some View {
 +        GeometryReader { geometry in
 +            TabView(selection: $preview) {
-+                ForEach(CompanionAppearance.available(spriteAvailable: CompanionAvatar.spriteAvailable)) { appearance in
-+                    page(for: appearance)
++                ForEach(catalog.items) { pet in
++                    remotePage(pet)
 +                        .frame(width: geometry.size.width, height: geometry.size.height)
-+                        .tag(appearance)
++                        .tag(AvatarSelection.identifier(for: pet.id))
++                }
++                ForEach(localAppearances) { appearance in
++                    localPage(appearance)
++                        .frame(width: geometry.size.width, height: geometry.size.height)
++                        .tag(appearance.rawValue)
 +                }
 +            }
 +            .tabViewStyle(.verticalPage)
@@ -3562,40 +5852,108 @@
 +        .sensitiveContent(placeholder: "Avatars hidden")
 +        .navigationTitle("")
 +        .toolbarTitleDisplayMode(.inline)
-+        .onAppear { preview = selected }
++        .onAppear {
++            preview = AvatarSelection.page(current: selection, selected: selection, available: identifiers)
++        }
++        .onChange(of: identifiers) { _, values in
++            preview = AvatarSelection.page(current: preview, selected: selection, available: values)
++        }
++        .task(id: scenePhase) {
++            guard scenePhase == .active else { return }
++            await catalog.refresh()
++            guard !Task.isCancelled, scenePhase == .active else { return }
++            if let id = AvatarSelection.petID(from: preview) { _ = await catalog.prepare(id: id) }
++        }
++        .task(id: preview) {
++            guard scenePhase == .active else { return }
++            if let id = AvatarSelection.petID(from: preview) { _ = await catalog.prepare(id: id) }
++        }
 +        .accessibilityIdentifier("avatar.picker")
 +    }
 +
-+    private func page(for appearance: CompanionAppearance) -> some View {
++    private func remotePage(_ pet: PetCatalogItem) -> some View {
++        let identifier = AvatarSelection.identifier(for: pet.id)
++        let url = catalog.cachedURL(for: pet.id)
++        return VStack(spacing: 2) {
++            Group {
++                if let url {
++                    CompanionAvatar(appearance: .sprite, animation: .idle, level: 0,
++                        atlasURL: url, playbackActive: preview == identifier)
++                        .id(catalog.generation)
++                } else if preview == identifier {
++                    if catalog.errorMessage == nil {
++                        ProgressView().accessibilityLabel("Loading avatar")
++                    } else {
++                        Image(systemName: "arrow.clockwise").foregroundStyle(.secondary)
++                    }
++                } else {
++                    Color.clear
++                }
++            }
++            .frame(maxWidth: .infinity, maxHeight: .infinity)
++            .layoutPriority(-1)
++            name(pet.name)
++            if url == nil, let error = catalog.errorMessage {
++                Text(error).font(.caption2).multilineTextAlignment(.center).lineLimit(2)
++                Button("Retry") {
++                    Task {
++                        await catalog.refresh(retry: true)
++                        guard !Task.isCancelled, scenePhase == .active else { return }
++                        _ = await catalog.prepare(id: pet.id)
++                    }
++                }
++                    .buttonStyle(.bordered)
++            } else {
++                chooseButton(identifier: identifier, name: pet.name, enabled: url != nil) {
++                    catalog.select(id: pet.id)
++                }
++            }
++        }
++        .padding(.horizontal, 12)
++    }
++
++    private func localPage(_ appearance: CompanionAppearance) -> some View {
 +        VStack(spacing: 2) {
-+            CompanionAvatar(appearance: appearance, animation: .idle, level: 0)
++            CompanionAvatar(appearance: appearance, animation: .idle, level: 0,
++                playbackActive: preview == appearance.rawValue)
 +                .frame(maxWidth: .infinity, maxHeight: .infinity)
 +                .layoutPriority(-1)
-+            Text(appearance.displayName(spriteName: spriteName))
-+                .font(.footnote.weight(.semibold))
-+                .multilineTextAlignment(.center)
-+                .fixedSize(horizontal: false, vertical: true)
-+            Button {
-+                selection = appearance.rawValue
-+                onChoose()
-+            } label: {
-+                Text(appearance == selected ? "Selected" : "Choose")
-+                    .frame(maxWidth: .infinity)
++            name(appearance.displayName(spriteName: spriteName))
++            if catalog.isLoading {
++                Text("Loading Dot avatars…").font(.caption2).foregroundStyle(.secondary)
++            } else if catalog.items.isEmpty, let error = catalog.errorMessage {
++                Text(error).font(.caption2).multilineTextAlignment(.center).lineLimit(2)
 +            }
-+            .buttonStyle(.borderedProminent)
-+            .tint(appearance == selected ? .gray : .accentColor)
-+            .accessibilityLabel(appearance == selected
-+                ? "Selected, \(appearance.displayName(spriteName: spriteName))"
-+                : "Choose \(appearance.displayName(spriteName: spriteName))")
-+            .accessibilityIdentifier("avatar.choose.\(appearance.rawValue)")
++            chooseButton(identifier: appearance.rawValue,
++                name: appearance.displayName(spriteName: spriteName), enabled: true) { catalog.select(id: nil) }
 +        }
-+        .frame(maxWidth: .infinity, maxHeight: .infinity)
 +        .padding(.horizontal, 12)
++    }
++
++    private func name(_ value: String) -> some View {
++        Text(value).font(.footnote.weight(.semibold))
++            .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
++    }
++
++    private func chooseButton(identifier: String, name: String, enabled: Bool,
++                              prepare: @escaping () -> Void) -> some View {
++        Button {
++            prepare()
++            selection = identifier
++            onChoose()
++        } label: {
++            Text(identifier == selection ? "Selected" : "Choose").frame(maxWidth: .infinity)
++        }
++        .buttonStyle(.borderedProminent)
++        .tint(identifier == selection ? .gray : .accentColor)
++        .disabled(!enabled)
++        .accessibilityLabel(identifier == selection ? "Selected, \(name)" : "Choose \(name)")
++        .accessibilityIdentifier("avatar.choose.\(identifier)")
 +    }
 +}
 --- /dev/null
 +++ b/WatchDotApp/CompanionAvatar.swift
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,177 @@
 +import SwiftUI
 +import WatchKit
 +
@@ -3606,18 +5964,21 @@
 +    let appearance: CompanionAppearance
 +    let animation: AvatarAnimation
 +    let level: Double
++    var atlasURL: URL? = nil
++    var playbackActive = true
 +
 +    static let spriteAvailable = UIImage(named: "AvatarAtlas") != nil
 +
 +    var body: some View {
 +        Group {
-+            if appearance == .sprite && Self.spriteAvailable {
-+                SpriteAvatar(animation: animation)
++            if atlasURL != nil || (appearance == .sprite && Self.spriteAvailable) {
++                SpriteAvatar(animation: animation, atlasURL: atlasURL, playbackActive: playbackActive)
 +            } else {
-+                OriginalCompanionAvatar(appearance: appearance, animation: animation, level: level)
++                OriginalCompanionAvatar(appearance: appearance, animation: animation, level: level,
++                    playbackActive: playbackActive)
 +            }
 +        }
-+        .overlay {
++        .background {
 +            if animation == .listening && scenePhase == .active && !luminanceReduced {
 +                microphoneLevel
 +            }
@@ -3652,9 +6013,10 @@
 +    let appearance: CompanionAppearance
 +    let animation: AvatarAnimation
 +    let level: Double
++    let playbackActive: Bool
 +    @State private var started = Date()
 +
-+    private var animates: Bool { scenePhase == .active && !reduceMotion && !luminanceReduced }
++    private var animates: Bool { playbackActive && scenePhase == .active && !reduceMotion && !luminanceReduced }
 +    private var tint: Color {
 +        switch appearance {
 +        case .sprite, .pebble: Color(red: 0.73, green: 0.65, blue: 1)
@@ -3665,15 +6027,16 @@
 +
 +    var body: some View {
 +        GeometryReader { geometry in
-+            let side = min(geometry.size.width, geometry.size.height) * 0.80
++            let side = AvatarLayout.glyphSide(width: geometry.size.width, height: geometry.size.height,
++                appearance: appearance)
 +            TimelineView(.animation(minimumInterval: 0.05, paused: !animates)) { context in
 +                let elapsed = animates ? context.date.timeIntervalSince(started) : 0
 +                let state = AvatarAnimation.displayed(animation, active: scenePhase == .active,
 +                    reduceMotion: reduceMotion, luminanceReduced: luminanceReduced)
 +                let meter = state == .listening && level.isFinite ? min(1, max(0, level)) : 0
 +                character(side: side, state: state, elapsed: elapsed)
-+                    .scaleEffect(1 + meter * 0.06)
-+                    .offset(y: animates ? sin(elapsed * 1.8) * 2 : 0)
++                    .scaleEffect(1 + meter * AvatarLayout.listeningGrowth)
++                    .offset(y: animates ? sin(elapsed * 1.8) * AvatarLayout.bobAmplitude : 0)
 +                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
 +            }
 +        }
@@ -3770,7 +6133,7 @@
 +}
 --- /dev/null
 +++ b/WatchDotApp/ReplyReaderView.swift
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,94 @@
 +import SwiftUI
 +
 +struct ReplyReaderView: View {
@@ -3831,6 +6194,7 @@
 +
 +struct AvatarMenuView: View {
 +    @ObservedObject var session: ConversationSession
++    @ObservedObject var catalog: PetCatalogSession
 +    @Binding var appearanceID: String
 +    let textTitle: String
 +    let showTextInput: () -> Void
@@ -3850,7 +6214,7 @@
 +            }
 +            .accessibilityIdentifier("avatar.menu.history")
 +            NavigationLink {
-+                AvatarPickerView(selection: $appearanceID, spriteName: session.transportName,
++                AvatarPickerView(selection: $appearanceID, catalog: catalog, spriteName: session.transportName,
 +                                 onChoose: choseAvatar)
 +            } label: {
 +                Label("Change Avatar", systemImage: "person.crop.circle")
@@ -3951,41 +6315,278 @@
 +#endif
 --- /dev/null
 +++ b/WatchDotApp/SpriteAvatar.swift
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,96 @@
 +import SwiftUI
 +
 +struct SpriteAvatar: View {
 +    @Environment(\.scenePhase) private var scenePhase
 +    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 +    @Environment(\.isLuminanceReduced) private var luminanceReduced
++    @Environment(\.redactionReasons) private var redactionReasons
++    @ObservedObject private var store = SpriteFrameStore.shared
 +    let animation: AvatarAnimation
++    var atlasURL: URL? = nil
++    var playbackActive = true
 +    @State private var started = Date()
++    @State private var frames: SpriteFrames?
++    @State private var loadedGeneration: UUID?
++    @State private var requestedGeneration: UUID?
++    @State private var requestedURL: URL?
++    @State private var loadingFailed = false
 +
-+    private var animates: Bool { scenePhase == .active && !reduceMotion && !luminanceReduced }
++    private struct LoadID: Hashable {
++        let url: URL?
++        let playbackActive: Bool
++        let focused: Bool
++        let contentVisible: Bool
++        let generation: UUID
++    }
++
++    private var animates: Bool {
++        playbackActive && scenePhase == .active && !reduceMotion && !luminanceReduced &&
++            !redactionReasons.contains(.privacy)
++    }
++
++    private var contentVisible: Bool {
++        atlasURL == nil || SensitiveContentPolicy.isVisible(isActive: scenePhase == .active,
++            luminanceReduced: luminanceReduced, privacyRedacted: redactionReasons.contains(.privacy))
++    }
 +
 +    var body: some View {
 +        GeometryReader { geometry in
-+            let width = min(geometry.size.width,
-+                            geometry.size.height * CGFloat(AvatarAnimation.cellWidth) / CGFloat(AvatarAnimation.cellHeight))
-+            let height = width * CGFloat(AvatarAnimation.cellHeight) / CGFloat(AvatarAnimation.cellWidth)
-+            TimelineView(.animation(minimumInterval: 0.05, paused: !animates)) { context in
-+                let state = AvatarAnimation.displayed(animation, active: scenePhase == .active,
-+                    reduceMotion: reduceMotion, luminanceReduced: luminanceReduced)
-+                let frame = animates ? state.frame(at: context.date.timeIntervalSince(started)) : 0
-+                Image("AvatarAtlas")
-+                    .resizable()
-+                    .interpolation(.none)
-+                    .frame(width: width * CGFloat(AvatarAnimation.columns),
-+                           height: height * CGFloat(AvatarAnimation.rows))
-+                    .offset(x: -CGFloat(frame) * width, y: -CGFloat(state.row) * height)
-+                    .frame(width: width, height: height, alignment: .topLeading)
-+                    .clipped()
-+                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
++            if contentVisible, let frames, loadedGeneration == store.generation {
++                TimelineView(.animation(minimumInterval: 0.05, paused: !animates)) { context in
++                    let state = animates ? animation : .idle
++                    let frame = animates ? state.frame(at: context.date.timeIntervalSince(started)) : 0
++                    Image(decorative: frames.image(animation: state, frame: frame), scale: 1)
++                        .resizable().interpolation(.none).scaledToFit()
++                        .frame(width: geometry.size.width, height: geometry.size.height)
++                }
++            } else {
++                Image(systemName: contentVisible && loadingFailed ?
++                    "person.crop.circle.badge.exclamationmark" : "person.crop.circle.fill")
++                    .font(.largeTitle).foregroundStyle(.secondary)
++                    .frame(width: geometry.size.width, height: geometry.size.height)
++            }
++        }
++        .task(id: LoadID(url: atlasURL, playbackActive: animates, focused: playbackActive,
++                         contentVisible: contentVisible,
++                         generation: store.generation)) {
++            frames = frames?.posterOnly
++            loadingFailed = false
++            guard contentVisible else { frames = nil; return }
++            let generation = store.generation
++            if atlasURL != nil, let requestedGeneration, requestedGeneration != generation, requestedURL == atlasURL {
++                frames = nil
++                return
++            }
++            requestedGeneration = generation
++            requestedURL = atlasURL
++            guard playbackActive else {
++                frames = store.cachedPoster(atlasURL: atlasURL)
++                loadedGeneration = generation
++                return
++            }
++            do {
++                let loaded = try await store.load(atlasURL: atlasURL, playbackActive: animates)
++                try Task.checkCancellation()
++                guard generation == store.generation else { return }
++                frames = loaded
++                loadedGeneration = generation
++            } catch is CancellationError {
++            } catch {
++                guard !Task.isCancelled, generation == store.generation else { return }
++                frames = nil
++                loadingFailed = true
 +            }
 +        }
 +        .onChange(of: animation) { _, _ in started = Date() }
-+        .onChange(of: animates) { _, _ in started = Date() }
++        .onChange(of: animates) { _, active in
++            started = Date()
++            if !active { frames = frames?.posterOnly }
++        }
++        .onChange(of: atlasURL) { _, _ in frames = nil }
++        .onChange(of: contentVisible) { _, visible in if !visible { frames = nil } }
++        .onChange(of: store.generation) { _, _ in frames = nil }
++        .onDisappear { frames = nil }
 +        .accessibilityHidden(true)
++    }
++}
+--- /dev/null
++++ b/WatchDotApp/SpriteFrameStore.swift
+@@ -0,0 +1,174 @@
++import SwiftUI
++import ImageIO
++import UniformTypeIdentifiers
++
++struct SpriteFrames: @unchecked Sendable {
++    let poster: CGImage
++    let rows: [Int: [CGImage]]
++
++    func image(animation: AvatarAnimation, frame: Int) -> CGImage {
++        guard let images = rows[animation.row], images.indices.contains(frame) else { return poster }
++        return images[frame]
++    }
++
++    var posterOnly: Self { Self(poster: poster, rows: [:]) }
++}
++
++@MainActor
++final class SpriteFrameStore: ObservableObject {
++    static let shared = SpriteFrameStore()
++    @Published private(set) var generation = UUID()
++    private let decoder = SpriteDecoder()
++    private var frames: [String: SpriteFrames] = [:]
++    private var posters: [String: SpriteFrames] = [:]
++    private var frameOrder: [String] = []
++    private var posterOrder: [String] = []
++    private var requests: [UUID: Task<SpriteFrames, Error>] = [:]
++
++    func purge() {
++        for request in requests.values { request.cancel() }
++        requests = [:]
++        frames = [:]
++        posters = [:]
++        frameOrder = []
++        posterOrder = []
++        generation = UUID()
++    }
++
++    func cachedPoster(atlasURL: URL?) -> SpriteFrames? {
++        posters[atlasURL?.absoluteString ?? "bundled"]
++    }
++
++    func load(atlasURL: URL?, playbackActive: Bool) async throws -> SpriteFrames {
++        try Task.checkCancellation()
++        let key = atlasURL?.absoluteString ?? "bundled"
++        if playbackActive, let cached = frames[key] { return cached }
++        if !playbackActive, let cached = posters[key] { return cached }
++        let expectedGeneration = generation
++        let requestID = UUID()
++        let request = Task { try await decoder.decode(atlasURL: atlasURL, includeFrames: playbackActive) }
++        requests = requests.merging([requestID: request]) { _, new in new }
++        defer { requests = requests.filter { $0.key != requestID } }
++        let decoded = try await withTaskCancellationHandler {
++            try await request.value
++        } onCancel: {
++            request.cancel()
++        }
++        try Task.checkCancellation()
++        guard generation == expectedGeneration else { throw CancellationError() }
++        if playbackActive {
++            frameOrder = Array((frameOrder.filter { $0 != key } + [key]).suffix(2))
++            frames = frames.merging([key: decoded]) { _, new in new }.filter { frameOrder.contains($0.key) }
++        }
++        posterOrder = Array((posterOrder.filter { $0 != key } + [key]).suffix(24))
++        posters = posters.merging([key: decoded.posterOnly]) { _, new in new }
++            .filter { posterOrder.contains($0.key) }
++        return decoded
++    }
++}
++
++private actor SpriteDecoder {
++    private enum DecodeError: Error { case invalidAtlas }
++    private let alphaThreshold: UInt8 = 8
++
++    func decode(atlasURL: URL?, includeFrames: Bool) throws -> SpriteFrames {
++        try Task.checkCancellation()
++        let (pixels, layout) = try readPixels(atlasURL: atlasURL)
++        let crop = try contentBounds(pixels: pixels, layout: layout)
++        let animations: [AvatarAnimation] = includeFrames ? AvatarAnimation.allCases : [.idle]
++        let rows = try Dictionary(uniqueKeysWithValues: animations.map { animation in
++            let count = includeFrames ? animation.durationsMilliseconds.count : 1
++            let images = try (0..<count).map { frame in
++                try Task.checkCancellation()
++                return try copyFrame(pixels: pixels, layout: layout, crop: crop, row: animation.row, frame: frame)
++            }
++            return (animation.row, images)
++        })
++        guard let poster = rows[AvatarAnimation.idle.row]?.first else { throw DecodeError.invalidAtlas }
++        return SpriteFrames(poster: poster, rows: includeFrames ? rows : [:])
++    }
++
++    private func readPixels(atlasURL: URL?) throws -> ([UInt8], SpriteAtlasLayout) {
++        try autoreleasepool {
++            let image = try sourceImage(atlasURL: atlasURL)
++            guard let layout = SpriteAtlasLayout(width: image.width, height: image.height) else {
++                throw DecodeError.invalidAtlas
++            }
++            return (try rgbaPixels(image), layout)
++        }
++    }
++
++    private func sourceImage(atlasURL: URL?) throws -> CGImage {
++        guard let atlasURL else {
++            guard let image = UIImage(named: "AvatarAtlas")?.cgImage else { throw DecodeError.invalidAtlas }
++            return image
++        }
++        guard atlasURL.isFileURL else { throw DecodeError.invalidAtlas }
++        let values = try atlasURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
++        let options = [kCGImageSourceShouldCache: false] as CFDictionary
++        guard values.isRegularFile == true, let size = values.fileSize, size > 0, size <= 16 * 1024 * 1024,
++              let source = CGImageSourceCreateWithURL(atlasURL as CFURL, options),
++              CGImageSourceGetCount(source) == 1,
++              let type = CGImageSourceGetType(source) as String?,
++              [UTType.png.identifier, UTType.webP.identifier].contains(type),
++              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, options) as? [CFString: Any],
++              let width = properties[kCGImagePropertyPixelWidth] as? Int,
++              let height = properties[kCGImagePropertyPixelHeight] as? Int,
++              SpriteAtlasLayout(width: width, height: height) != nil,
++              let image = CGImageSourceCreateImageAtIndex(source, 0, options) else { throw DecodeError.invalidAtlas }
++        return image
++    }
++
++    private func rgbaPixels(_ image: CGImage) throws -> [UInt8] {
++        var pixels = [UInt8](repeating: 0, count: image.width * image.height * 4)
++        try pixels.withUnsafeMutableBytes { buffer in
++            guard let context = CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
++                bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
++                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue)
++            else { throw DecodeError.invalidAtlas }
++            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
++        }
++        return pixels
++    }
++
++    private func contentBounds(pixels: [UInt8], layout: SpriteAtlasLayout) throws -> SpriteAtlasLayout.Crop {
++        var minX = AvatarAnimation.cellWidth, minY = AvatarAnimation.cellHeight
++        var maxX = 0, maxY = 0
++        for animation in AvatarAnimation.allCases {
++            for frame in animation.durationsMilliseconds.indices {
++                try Task.checkCancellation()
++                for y in 0..<AvatarAnimation.cellHeight {
++                    for x in 0..<AvatarAnimation.cellWidth {
++                        let atlasX = frame * AvatarAnimation.cellWidth + x
++                        let atlasY = animation.row * AvatarAnimation.cellHeight + y
++                        if pixels[(atlasY * layout.width + atlasX) * 4 + 3] > alphaThreshold {
++                            minX = min(minX, x); minY = min(minY, y)
++                            maxX = max(maxX, x + 1); maxY = max(maxY, y + 1)
++                        }
++                    }
++                }
++            }
++        }
++        guard let crop = layout.crop(minX: minX, minY: minY, maxX: maxX, maxY: maxY) else {
++            throw DecodeError.invalidAtlas
++        }
++        return crop
++    }
++
++    private func copyFrame(pixels: [UInt8], layout: SpriteAtlasLayout, crop: SpriteAtlasLayout.Crop,
++                           row: Int, frame: Int) throws -> CGImage {
++        let data = Data((0..<crop.height).flatMap { y -> ArraySlice<UInt8> in
++            let x = frame * AvatarAnimation.cellWidth + crop.x
++            let atlasY = row * AvatarAnimation.cellHeight + crop.y + y
++            let start = (atlasY * layout.width + x) * 4
++            return pixels[start..<(start + crop.width * 4)]
++        })
++        guard let provider = CGDataProvider(data: data as CFData),
++              let image = CGImage(width: crop.width, height: crop.height, bitsPerComponent: 8, bitsPerPixel: 32,
++                bytesPerRow: crop.width * 4, space: CGColorSpaceCreateDeviceRGB(),
++                bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Big.rawValue |
++                    CGImageAlphaInfo.premultipliedLast.rawValue), provider: provider,
++                decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { throw DecodeError.invalidAtlas }
++        return image
 +    }
 +}
 --- /dev/null

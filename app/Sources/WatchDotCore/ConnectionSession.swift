@@ -34,6 +34,7 @@ public final class ConnectionSession: ObservableObject {
     @Published public private(set) var demoEnabled = false
     @Published public private(set) var isRenewingSession = false
     @Published public private(set) var voiceGeneration = UUID()
+    public let petCatalog: PetCatalogSession
 
     public func selectDemo(_ enabled: Bool) {
         if demoEnabled != enabled { voiceGeneration = UUID() }
@@ -96,6 +97,9 @@ public final class ConnectionSession: ObservableObject {
                 chatDirectory: URL? = nil, backgroundReceiver: (any BackgroundChatReceiving)? = nil,
                 companion: (any WatchSignInLink)? = nil,
                 transcriptionHTTP: any SignInHTTP = SecureSignInHTTP(requestTimeout: 60, resourceTimeout: 60)) {
+        let cacheRoot = (chatDirectory ?? FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0])
+            .appendingPathComponent("PetCatalog", isDirectory: true)
+        petCatalog = PetCatalogSession(directory: cacheRoot)
         self.store = store
         self.companion = companion
         self.http = http
@@ -105,6 +109,10 @@ public final class ConnectionSession: ObservableObject {
         service = SignInService(http: http)
         dotProbe = DotAccessProbe(http: http)
         self.now = now
+        petCatalog.configure { [weak self] in
+            guard let self else { throw PetCatalogError.signedOut }
+            return try await self.fetchPetCatalog()
+        }
         refresh()
     }
 
@@ -118,6 +126,7 @@ public final class ConnectionSession: ObservableObject {
                 resetDotProbe()
             }
             record = loaded
+            synchronizePetScope()
             storageAvailable = true
             if let account = record.account {
                 accountLabel = account.email ?? "ChatGPT account"
@@ -127,6 +136,7 @@ public final class ConnectionSession: ObservableObject {
                 phase = (record.phoneRequest?.expiresAt ?? .distantPast) > now() ? .awaitingConsent : (isConfigured ? .signedOut : .setupRequired)
             }
         } catch {
+            petCatalog.hideForUnavailableIdentity()
             resetDotProbe()
             storageAvailable = false
             phase = .failed(SignInError.storage.message)
@@ -185,6 +195,7 @@ public final class ConnectionSession: ObservableObject {
     }
 
     public func signOutLocally() {
+        petCatalog.bind(to: nil)
         renewalID = nil
         renewalTask?.cancel(); renewalTask = nil
         isRenewingSession = false
@@ -259,6 +270,7 @@ public final class ConnectionSession: ObservableObject {
                 // Tokens and receipt are one atomic Keychain record; never acknowledge a failed save.
                 try store.save(updated)
                 record = updated
+                synchronizePetScope()
                 phoneValidationID = nil
                 resetDotProbe()
                 accountLabel = transfer.account.email ?? "ChatGPT account"
@@ -345,6 +357,7 @@ public final class ConnectionSession: ObservableObject {
     }
 
     public func enterBackground() {
+        petCatalog.suspend()
         voiceGeneration = UUID()
         isForeground = false
         pause()
@@ -358,6 +371,7 @@ public final class ConnectionSession: ObservableObject {
 
     public func enterForeground() {
         isForeground = true
+        petCatalog.resume()
         backgroundTransition?.cancel()
         backgroundTransition = Task { [weak self] in
             guard let self else { return }
@@ -454,6 +468,7 @@ public final class ConnectionSession: ObservableObject {
             do { try store.save(updated) }
             catch { phase = .failed(SignInError.storage.message); throw SignInError.storage }
             record = updated; self.unsavedRenewal = nil; storageAvailable = true
+            synchronizePetScope()
         }
         guard let account = record.account else { throw SignInError.expired }
         if (record.phoneRequest?.expiresAt ?? .distantPast) > now() {
@@ -496,6 +511,7 @@ public final class ConnectionSession: ObservableObject {
                 do { try self.store.save(updated) }
                 catch { throw SignInError.storage }
                 self.record = updated; self.unsavedRenewal = nil; self.storageAvailable = true
+                self.synchronizePetScope()
                 self.renewalRetryAfter = nil
                 self.accountLabel = renewed.email ?? "ChatGPT account"
                 self.phase = .signedIn
@@ -514,6 +530,7 @@ public final class ConnectionSession: ObservableObject {
                         do { try self.store.save(updated); self.unsavedRenewal = nil }
                         catch { self.storageAvailable = false }
                         self.record = updated
+                        self.synchronizePetScope()
                         self.phase = .expired
                     case .storage:
                         self.storageAvailable = false
@@ -535,4 +552,50 @@ public final class ConnectionSession: ObservableObject {
         return try await work.value
     }
 
+}
+
+extension ConnectionSession {
+    private func petScope(for account: SignedInAccount?) -> String? {
+        guard let account, let token = account.accessToken,
+              let identity = try? dotProbe.routingIdentity(token, account: account, now: .distantPast) else { return nil }
+        // Expiry prevents network access, but a verified identity may retain its offline avatar.
+        return PetCatalogItem.digest([account.subject, identity.accountID, identity.userID])
+    }
+
+    private func synchronizePetScope() {
+        if record.account == nil { petCatalog.bind(to: nil) }
+        else if let scope = petScope(for: record.account) { petCatalog.bind(to: scope) }
+        else { petCatalog.hideForUnavailableIdentity() }
+    }
+
+    public func fetchPetCatalog() async throws -> [PetCatalogItem] {
+        guard isForeground, !demoEnabled, let expectedScope = petCatalog.scope else { throw PetCatalogError.signedOut }
+        let generation = petCatalog.generation
+        for attempt in 0...1 {
+            let account = try await ensureCurrentAccount(force: attempt == 1)
+            synchronizePetScope()
+            try validatePetIdentity(scope: expectedScope, generation: generation)
+            guard let token = account.accessToken else { throw PetCatalogError.signedOut }
+            let identity = try dotProbe.routingIdentity(token, account: account, now: now())
+            let credentials = PetCatalogCredentials(accessToken: token, accountID: identity.accountID, scope: expectedScope)
+            do {
+                return try await PetCatalogClient(http: http).fetch(credentials: credentials) { [weak self] in
+                    guard let self else { throw PetCatalogError.signedOut }
+                    try self.validatePetIdentity(scope: expectedScope, generation: generation)
+                }
+            } catch PetCatalogError.http(let status) where status == 401 && attempt == 0 {
+                try validatePetIdentity(scope: expectedScope, generation: generation)
+            }
+        }
+        throw PetCatalogError.unavailable
+    }
+
+    private func validatePetIdentity(scope: String, generation: UUID) throws {
+        try Task.checkCancellation()
+        guard isForeground, !demoEnabled, petCatalog.scope == scope, petCatalog.generation == generation,
+              phase == .signedIn, petScope(for: record.account) == scope,
+              let stored = try store.load()?.account, petScope(for: stored) == scope else {
+            throw PetCatalogError.identityChanged
+        }
+    }
 }
