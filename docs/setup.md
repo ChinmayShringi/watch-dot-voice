@@ -1,4 +1,7 @@
-# Setup
+# Rillby setup
+
+Rillby was formerly named Watch Dot Voice. The installed app is **Rillby**; the Xcode project,
+targets, schemes and signing configuration keep their existing `WatchDot` names.
 
 > The ChatGPT endpoints this app uses are non-public and undocumented. They are experimental, not
 > supported by OpenAI, and may stop working at any time. See the notice in the
@@ -67,12 +70,12 @@ xcodebuild -project app/WatchDot.xcodeproj -scheme WatchDot -destination 'generi
    Watch once, so Xcode registers it and creates profiles that include it.
 3. **Build the iPhone app.** Build and run **WatchDotPhone** on the iPhone. If the profiles
    changed, clean first so the embedded Watch app is re-signed.
-4. **Install on the Watch.** If installing from the iPhone's Watch app doesn't complete, run the
-   **WatchDot** scheme on the Watch directly.
+4. **Install on the Watch.** Select **Rillby** in the iPhone's Watch app. If installation doesn't
+   complete, run the **WatchDot** scheme on the Watch directly.
 
 ## 5. First sign-in
 
-1. Open the app on the Watch and the iPhone.
+1. Open **Rillby** on the Watch and the iPhone.
 2. Tap **Continue with ChatGPT** on either device and finish signing in on the iPhone. Enter your
    password only on OpenAI's own page.
 3. Once the Watch has authorized and connected to your Dot, the home screen shows your avatar.

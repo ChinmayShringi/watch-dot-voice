@@ -18,7 +18,7 @@ public enum SignInError: Error, Sendable {
         switch self {
         case .refreshRejected: "OpenAI no longer allows renewing this session. Sign in again."
         case .refreshUnavailable: "Couldn't renew the session. Check the connection and try again."
-        case .configuration: "Couldn't prepare the secure connection. Open Watch Dot on your iPhone and try again."
+        case .configuration: "Couldn't prepare the secure connection. Open Rillby on your iPhone and try again."
         case .storage: "Couldn't access the Keychain. Unlock the device and try again."
         case .random: "Couldn't prepare a secure authorization."
         case .invalidResponse: "The authorization response is invalid. Start another attempt."
@@ -27,7 +27,7 @@ public enum SignInError: Error, Sendable {
         case .expired: "Authorization expired. Sign in again."
         case .exchangeUncertain: "Validation was interrupted. Start a new authorization."
         case .clientUnavailable: "OpenAI rejected this authorization's client (invalid_client). You were not signed in."
-        case .browser: "Couldn't open the browser. Open Watch Dot on your iPhone and try again."
+        case .browser: "Couldn't open the browser. Open Rillby on your iPhone and try again."
         case .unavailable: "Couldn't reach the service. Check the connection and try again."
         case .tls: "Couldn't verify the service certificate. Check the connection and try again."
         }

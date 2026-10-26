@@ -23,12 +23,12 @@ private struct PhoneConnectionView: View {
         NavigationStack {
             List {
                 Section("Apple Watch") {
-                    Label(connectivity.reachable ? "Watch Dot available" : "Waiting for the watch",
+                    Label(connectivity.reachable ? "Rillby available" : "Waiting for the watch",
                           systemImage: connectivity.reachable ? "applewatch.radiowaves.left.and.right" : "applewatch")
                     if !connectivity.counterpartInstalled {
-                        Text("Install Watch Dot from the Watch app on your iPhone.")
+                        Text("Install Rillby from the Watch app on your iPhone.")
                     } else if !connectivity.reachable {
-                        Text("Open Watch Dot on your Apple Watch and keep it nearby while you authorize.")
+                        Text("Open Rillby on your Apple Watch and keep it nearby while you authorize.")
                     }
                 }
                 Section("ChatGPT account") {
@@ -46,7 +46,7 @@ private struct PhoneConnectionView: View {
                     Text("The chat with your Dot lives on your Apple Watch. After sign-in, the watch can use its own internet connection.")
                 }
             }
-            .navigationTitle("Watch Dot")
+            .navigationTitle("Rillby")
         }
     }
 }

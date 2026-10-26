@@ -15,6 +15,7 @@ unreviewed project change.
 | Signing | Structural comparison of `project.pbxproj` against upstream | The upstream team ID is removed. Bundle IDs derive from `$(WATCHDOT_BUNDLE_PREFIX)`, and the project-level base configuration is `docs/config/WatchDot.xcconfig`. |
 | English | `docs/translation/en-replacements.json` | 194 exact literal replacements in 11 sources and 3 tests, each with its expected match count. Protocol identifiers, OAuth parameters, headers, Keychain service names and Swift identifiers are unchanged. |
 | Voice and avatar | `docs/patches/avatar-voice.json` pinning `avatar-voice/avatar-voice.patch` and `avatar-voice/base-project.pbxproj` by SHA256 | One unified diff, applied at exact positions with no fuzz. See below. |
+| Branding | `docs/branding/icon.json` | Exact upstream and replacement hashes for the three app and complication icon PNGs. Rillby display names and copy are recorded in the feature patch. |
 | NOTICE | Append-only | The upstream text is unchanged, followed by a local-modifications section. |
 
 ## The feature patch
@@ -30,10 +31,13 @@ unreviewed project change.
   - new Swift file references whose parent groups resolve to exactly the listed new files;
   - their build files, in a sources phase;
   - `CURRENT_PROJECT_VERSION` and `MARKETING_VERSION`;
+  - `INFOPLIST_KEY_CFBundleDisplayName` for the Rillby app name;
   - the Watch target's microphone usage description.
 
   Bundle IDs, targets, signing and embedding are checked separately and stay unchanged.
 
 ## Artwork
 
-No sprite artwork is included. See [custom-avatar.md](custom-avatar.md).
+The original generated Rillby app icon is included under GPL-3.0-only. See
+[branding.md](branding.md) for its creation and hash record. No sprite artwork is included. See
+[custom-avatar.md](custom-avatar.md).

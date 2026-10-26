@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "provenance": {
+    "description": "Original Rillby ivory companion on teal artwork generated with OpenAI imagegen on 2026-10-25, no reference images; resampled with Apple sips to opaque RGB 1024x1024 PNG. Ancillary PNG metadata removed without changing image data.",
+    "license": "GPL-3.0-only"
+  },
+  "replacements": [
+    {
+      "file": "PhoneDotApp/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+      "upstream_sha256": "d7cdb44781c4566a81d73bf165fa65565c13766ba476001a44a96ffbaa3fae35",
+      "sha256": "9700684ef096241e7066acc9cd65d143b4a9ae8390b668ee1611ca84e6e9ad79"
+    },
+    {
+      "file": "WatchDotApp/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+      "upstream_sha256": "d7cdb44781c4566a81d73bf165fa65565c13766ba476001a44a96ffbaa3fae35",
+      "sha256": "9700684ef096241e7066acc9cd65d143b4a9ae8390b668ee1611ca84e6e9ad79"
+    },
+    {
+      "file": "WatchDotComplication/Assets.xcassets/WatchDotIcon.imageset/WatchDotIcon.png",
+      "upstream_sha256": "d7cdb44781c4566a81d73bf165fa65565c13766ba476001a44a96ffbaa3fae35",
+      "sha256": "9700684ef096241e7066acc9cd65d143b4a9ae8390b668ee1611ca84e6e9ad79"
+    }
+  ]
+}

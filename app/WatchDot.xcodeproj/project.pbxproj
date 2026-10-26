@@ -307,11 +307,11 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;
-                CURRENT_PROJECT_VERSION = 7;
+                CURRENT_PROJECT_VERSION = 8;
                 MARKETING_VERSION = 1.1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = WatchDotApp/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Watch Dot";
+				INFOPLIST_KEY_CFBundleDisplayName = "Rillby";
 				INFOPLIST_KEY_WKApplication = YES;
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "$(WATCHDOT_BUNDLE_PREFIX)";
                 INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = NO;
@@ -332,11 +332,11 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;
-                CURRENT_PROJECT_VERSION = 7;
+                CURRENT_PROJECT_VERSION = 8;
                 MARKETING_VERSION = 1.1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = WatchDotApp/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "Watch Dot";
+				INFOPLIST_KEY_CFBundleDisplayName = "Rillby";
 				INFOPLIST_KEY_WKApplication = YES;
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "$(WATCHDOT_BUNDLE_PREFIX)";
                 INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = NO;
@@ -372,11 +372,11 @@
 		};
 		C00000000000000000000011 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES;
                 CODE_SIGN_STYLE = Automatic;
-                CURRENT_PROJECT_VERSION = 7;
+                CURRENT_PROJECT_VERSION = 8;
                 MARKETING_VERSION = 1.1;
                 GENERATE_INFOPLIST_FILE = YES;
                 INFOPLIST_FILE = WatchDotComplication/Info.plist;
-                INFOPLIST_KEY_CFBundleDisplayName = "Watch Dot";
+                INFOPLIST_KEY_CFBundleDisplayName = "Rillby";
                 PRODUCT_BUNDLE_IDENTIFIER = "$(WATCHDOT_BUNDLE_PREFIX).watchkitapp.launcher";
                 PRODUCT_NAME = "$(TARGET_NAME)";
                 SDKROOT = watchos;
@@ -387,11 +387,11 @@
                 WATCHOS_DEPLOYMENT_TARGET = 10.0;}; name = Debug; };
 		C00000000000000000000012 = {isa = XCBuildConfiguration; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES;
                 CODE_SIGN_STYLE = Automatic;
-                CURRENT_PROJECT_VERSION = 7;
+                CURRENT_PROJECT_VERSION = 8;
                 MARKETING_VERSION = 1.1;
                 GENERATE_INFOPLIST_FILE = YES;
                 INFOPLIST_FILE = WatchDotComplication/Info.plist;
-                INFOPLIST_KEY_CFBundleDisplayName = "Watch Dot";
+                INFOPLIST_KEY_CFBundleDisplayName = "Rillby";
                 PRODUCT_BUNDLE_IDENTIFIER = "$(WATCHDOT_BUNDLE_PREFIX).watchkitapp.launcher";
                 PRODUCT_NAME = "$(TARGET_NAME)";
                 SDKROOT = watchos;
@@ -403,10 +403,10 @@
         D00000000000000000000014 = {isa = XCBuildConfiguration; buildSettings = {
             ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
             CODE_SIGN_STYLE = Automatic;
-            CURRENT_PROJECT_VERSION = 7;
+            CURRENT_PROJECT_VERSION = 8;
             MARKETING_VERSION = 1.1;
             GENERATE_INFOPLIST_FILE = YES;
-            INFOPLIST_KEY_CFBundleDisplayName = "Watch Dot";
+            INFOPLIST_KEY_CFBundleDisplayName = "Rillby";
             INFOPLIST_KEY_UILaunchScreen_Generation = YES;
             INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
             IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -420,10 +420,10 @@
         D00000000000000000000015 = {isa = XCBuildConfiguration; buildSettings = {
             ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
             CODE_SIGN_STYLE = Automatic;
-            CURRENT_PROJECT_VERSION = 7;
+            CURRENT_PROJECT_VERSION = 8;
             MARKETING_VERSION = 1.1;
             GENERATE_INFOPLIST_FILE = YES;
-            INFOPLIST_KEY_CFBundleDisplayName = "Watch Dot";
+            INFOPLIST_KEY_CFBundleDisplayName = "Rillby";
             INFOPLIST_KEY_UILaunchScreen_Generation = YES;
             INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
             IPHONEOS_DEPLOYMENT_TARGET = 17.0;

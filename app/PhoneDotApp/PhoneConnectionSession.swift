@@ -4,7 +4,7 @@ import Combine
 @MainActor
 final class PhoneConnectionSession: ObservableObject {
     let connectivity = CompanionConnectivity()
-    @Published private(set) var status = "Open Watch Dot on your Apple Watch to connect."
+    @Published private(set) var status = "Open Rillby on your Apple Watch to connect."
     @Published private(set) var busy = false
     @Published private(set) var authorized = false
     private let vault = PhoneTransferVault()
@@ -46,7 +46,7 @@ final class PhoneConnectionSession: ObservableObject {
                 guard self.operation == operation else { return }
                 guard case .begin(let request) = response else {
                     if case .failure(let reason) = response { status = reason }
-                    else { status = "Open Watch Dot on the watch and try again." }
+                    else { status = "Open Rillby on the watch and try again." }
                     busy = false; task = nil; return
                 }
                 try await authorize(request, operation: operation)
@@ -122,8 +122,8 @@ final class PhoneConnectionSession: ObservableObject {
             // Application context can be stale: query the Watch before presenting any browser.
             self.request = request
             if foreground { recover() }
-            else { status = "Request received. Open Watch Dot to authorize." }
-            return .status("Open Watch Dot on your iPhone to authorize.")
+            else { status = "Request received. Open Rillby to authorize." }
+            return .status("Open Rillby on your iPhone to authorize.")
         case .cancel(let request):
             if self.request == request { cancel() }
             return .idle
@@ -152,7 +152,7 @@ final class PhoneConnectionSession: ObservableObject {
                         if case .acknowledgement(let receipt) = reply, receipt == pending.receipt {
                             try complete()
                         } else if case .failure(let reason) = reply { status = reason }
-                        else { status = "Handoff pending. Open Watch Dot on the watch and retry." }
+                        else { status = "Handoff pending. Open Rillby on the watch and retry." }
                     case .failure(let reason): status = reason
                     default:
                         try discard()
@@ -166,8 +166,8 @@ final class PhoneConnectionSession: ObservableObject {
                 }
             } catch {
                 guard self.operation == operation else { return }
-                status = pending == nil ? "Open Watch Dot on the watch and tap Continue with ChatGPT."
-                    : "Session waiting for handoff. Open Watch Dot on the watch and retry."
+                status = pending == nil ? "Open Rillby on the watch and tap Continue with ChatGPT."
+                    : "Session waiting for handoff. Open Rillby on the watch and retry."
             }
         }
     }

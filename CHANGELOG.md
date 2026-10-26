@@ -7,6 +7,8 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- Original Rillby app icon for the iPhone, Watch and complication, with recorded creation and
+  asset hashes. The artwork is distributed under GPL-3.0-only with the project.
 - Avatar-first Watch home screen. Text chat, history, avatar choice and settings move into a
   top-left Options menu.
 - Tap-to-talk voice input, transcribed by ChatGPT dictation with the existing sign-in and sent
@@ -27,6 +29,9 @@ All notable changes are listed here. The format follows
 
 ### Changed
 
+- Build 8 names the app **Rillby**, formerly Watch Dot Voice, in its display names, setup copy and
+  complication. Bundle IDs, Xcode targets and schemes, saved data and protocol identifiers retain
+  their existing names. The complication refresh revision advances to 7.
 - The avatar's VoiceOver label, hint and value follow the recording state. While listening, the
   status line also says "Tap to send".
 - A transcription already running now continues while the app is inactive, for example when the

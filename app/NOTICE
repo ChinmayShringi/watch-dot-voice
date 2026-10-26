@@ -21,7 +21,7 @@ This attribution identifies a protocol reference; it does not assert that
 OpenAI authored or endorses Watch Dot.
 
 ----
-Local modifications (watch-dot-voice)
+Local modifications (Rillby, formerly Watch Dot Voice; watch-dot-voice)
 
 This copy is derived from https://github.com/Torcata/watch-dot at commit
 0ca53cc050017533e5ed8aef0436fc32e20f2ba1. Changes:
@@ -40,6 +40,10 @@ This copy is derived from https://github.com/Torcata/watch-dot at commit
   transcript is sent through the existing message path. Includes a microphone
   usage description and a build number bump. No sprite artwork is included; see
   ../docs/custom-avatar.md.
+- Rillby branding: app display names and visible copy, build 8, and complication revision 7.
+  Technical identifiers are unchanged. The original Rillby app and complication icon artwork was
+  generated without reference images and is distributed under GPL-3.0-only. Its creation is
+  documented in ../docs/branding.md and its replacement hashes in ../docs/branding/icon.json.
 - This NOTICE.
 All other files are byte-identical to that commit. Distributed under the same
 GPL-3.0-only license.

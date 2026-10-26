@@ -21,6 +21,9 @@ so the workflow is slightly different from a typical app.
    fuzz), pinned by SHA256 in `docs/patches/avatar-voice.json` together with the pre-feature project
    file.
 
+The original Rillby icon replacements are separately pinned by upstream and replacement hashes in
+`docs/branding/icon.json`. See [the branding provenance](docs/branding.md).
+
 After editing anything under `app/`:
 
 ```bash
@@ -33,8 +36,8 @@ swift test --package-path app
 The recorder writes nothing if it finds a file it cannot classify. New Swift files may live only in
 `Sources/WatchDotCore/`, `Tests/WatchDotCoreTests/` or `WatchDotApp/`. Their project references
 must sit in groups that resolve to exactly those paths. The only build settings a change may touch
-are `CURRENT_PROJECT_VERSION`, `MARKETING_VERSION`, and the Watch app's microphone usage
-description.
+are `CURRENT_PROJECT_VERSION`, `MARKETING_VERSION`, `INFOPLIST_KEY_CFBundleDisplayName` for the
+Rillby app name, and the Watch app's microphone usage description.
 
 ## Code style
 

@@ -150,7 +150,7 @@ final class PhoneOAuthBrowser: NSObject, ASWebAuthenticationPresentationContextP
         }
     }
     private func respond(_ connection: NWConnection, status: String) {
-        let body = "Return to Watch Dot to continue."
+        let body = "Return to Rillby to continue."
         let response = "HTTP/1.1 \(status)\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n\(body)"
         connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
     }

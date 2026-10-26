@@ -107,23 +107,23 @@ struct WatchDotApp: App {
     private func refreshComplicationImageIfNeeded() {
         // One refresh per icon revision; the launcher still has no periodic timeline.
         let key = "WatchDot.complicationIconRevision"
-        guard UserDefaults.standard.integer(forKey: key) < 6 else { return }
+        guard UserDefaults.standard.integer(forKey: key) < 7 else { return }
         WidgetCenter.shared.reloadTimelines(ofKind: "cl.australapps.watchdot.launcher")
         #if DEBUG
         WidgetCenter.shared.getCurrentConfigurations { result in
             let record: [String: Any]
             switch result {
             case .success(let widgets):
-                record = ["revision": 6, "widgets": widgets.map { ["kind": $0.kind, "family": $0.family.rawValue] as [String: Any] }]
+                record = ["revision": 7, "widgets": widgets.map { ["kind": $0.kind, "family": $0.family.rawValue] as [String: Any] }]
             case .failure:
-                record = ["revision": 6, "status": "unavailable"]
+                record = ["revision": 7, "status": "unavailable"]
             }
             if let data = try? JSONSerialization.data(withJSONObject: record, options: .sortedKeys) {
                 try? data.write(to: URL.cachesDirectory.appendingPathComponent("watchdot-widget-configurations.json"), options: .atomic)
             }
         }
         #endif
-        UserDefaults.standard.set(6, forKey: key)
+        UserDefaults.standard.set(7, forKey: key)
     }
 
     private func connectChatIfReady() {
@@ -604,14 +604,14 @@ private struct ConnectionView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 Text(connection.phase.title).font(.headline)
-                Text("Watch Dot · Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""))")
+                Text("Rillby · Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""))")
                     .font(.caption2).foregroundStyle(.secondary)
                 if let account = connection.accountLabel { Text(account) }
                 if case .failed(let reason) = connection.phase {
                     Text(reason).foregroundStyle(.orange)
                 }
                 if connection.phase == .awaitingConsent {
-                    Text("Open Watch Dot on your iPhone and finish authorizing in the browser. The session will reach the watch automatically.")
+                    Text("Open Rillby on your iPhone and finish authorizing in the browser. The session will reach the watch automatically.")
                 }
                 if connection.isRenewingSession {
                     ProgressView("Renewing session…")
@@ -626,7 +626,7 @@ private struct ConnectionView: View {
                 }
                 Text(connection.phase == .signedIn
                      ? "Your account is connected. Direct chat is experimental."
-                     : "Authorize your account from Watch Dot on your iPhone. The chat with your Dot runs on the watch.")
+                     : "Authorize your account from Rillby on your iPhone. The chat with your Dot runs on the watch.")
                     .foregroundStyle(.secondary)
 
                 if connection.phase == .signedIn {

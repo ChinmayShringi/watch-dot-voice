@@ -1,6 +1,7 @@
-# watch-dot-voice
+# Rillby
 
-Talk to your ChatGPT Dot from an Apple Watch: tap the avatar, speak, and read the reply on your wrist.
+Rillby, formerly Watch Dot Voice, lets you talk to your ChatGPT Dot from an Apple Watch: tap the
+avatar, speak, and read the reply on your wrist. The repository remains `watch-dot-voice`.
 
 [![CI](https://github.com/ChinmayShringi/watch-dot-voice/actions/workflows/ci.yml/badge.svg)](https://github.com/ChinmayShringi/watch-dot-voice/actions/workflows/ci.yml)
 [![License: GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](LICENSE)
@@ -69,8 +70,9 @@ cp docs/config/WatchDot.local.xcconfig.example docs/config/WatchDot.local.xcconf
 open app/WatchDot.xcodeproj
 ```
 
-Build the **WatchDotPhone** scheme to your iPhone; the Watch app is embedded. Then tap **Continue
-with ChatGPT**. Full steps are in [docs/setup.md](docs/setup.md).
+Build the **WatchDotPhone** scheme to your iPhone; the Watch app is embedded. Open **Rillby** and
+tap **Continue with ChatGPT**. Xcode targets and schemes retain their `WatchDot` names. Full steps
+are in [docs/setup.md](docs/setup.md).
 
 ## Repository layout
 
@@ -80,7 +82,7 @@ with ChatGPT**. Full steps are in [docs/setup.md](docs/setup.md).
 | `docs/config/` | Signing placeholders and the template for your git-ignored local override |
 | `docs/translation/`, `docs/patches/` | Every reviewed change to upstream, as manifests and one strict patch |
 | `docs/scripts/` | The provenance checker, the feature recorder and their tests |
-| `docs/` | [Setup](docs/setup.md), [architecture](docs/architecture.md), [provenance](docs/app-provenance.md), [custom avatars](docs/custom-avatar.md) |
+| `docs/` | [Setup](docs/setup.md), [architecture](docs/architecture.md), [provenance](docs/app-provenance.md), [branding](docs/branding.md), [custom avatars](docs/custom-avatar.md) |
 
 ## Verifying the tree
 
@@ -110,4 +112,5 @@ See [SECURITY.md](SECURITY.md).
 
 GPL-3.0-only, inherited from upstream. See [LICENSE](LICENSE) and [app/NOTICE](app/NOTICE). The OAuth
 flow follows the protocol of [openai/codex](https://github.com/openai/codex) (Apache-2.0) as a
-reference; no code is copied from it.
+reference; no code is copied from it. The original generated Rillby icon uses the same GPL-3.0-only
+license; its creation and file hashes are documented in [docs/branding.md](docs/branding.md).

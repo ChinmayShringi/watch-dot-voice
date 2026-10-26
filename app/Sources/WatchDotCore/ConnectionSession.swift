@@ -7,7 +7,7 @@ public enum ConnectionPhase: Equatable {
     case failed(String)
     public var title: String {
         switch self {
-        case .setupRequired: "Open Watch Dot on your iPhone"
+        case .setupRequired: "Open Rillby on your iPhone"
         case .signedOut: "Signed out"
         case .connecting: "Connecting to iPhone…"
         case .awaitingConsent: "Authorize on your iPhone"
@@ -68,7 +68,7 @@ public final class ConnectionSession: ObservableObject {
     public var isConfigured: Bool { companion != nil }
     public var canResume: Bool { (record.phoneRequest?.expiresAt ?? .distantPast) > now() }
     public var actionTitle: String {
-        if !isConfigured && !canRenewSession { return "Open Watch Dot on your iPhone" }
+        if !isConfigured && !canRenewSession { return "Open Rillby on your iPhone" }
         if canResume { return "Resume authorization" }
         if canRenewSession { return "Renew session" }
         if phase == .expired { return "Authorize again" }
@@ -281,7 +281,7 @@ public final class ConnectionSession: ObservableObject {
 
     public func companionRequestFailed() {
         if record.phoneRequest != nil {
-            phase = .failed("Open Watch Dot on your iPhone and tap Continue with ChatGPT.")
+            phase = .failed("Open Rillby on your iPhone and tap Continue with ChatGPT.")
         }
     }
 

@@ -44,7 +44,7 @@ private struct LauncherProvider: TimelineProvider {
         #if DEBUG
         // Three bounded local files for device validation; no personal data or network.
         let record: [String: Any] = [
-            "revision": 6, "stage": stage, "date": Date.now.timeIntervalSince1970,
+            "revision": 7, "stage": stage, "date": Date.now.timeIntervalSince1970,
             "family": context.family.rawValue, "preview": context.isPreview,
             "width": context.displaySize.width, "height": context.displaySize.height,
             "imageLoaded": entry.icon != nil,
@@ -72,13 +72,13 @@ private struct LauncherIcon: View {
                     .scaledToFit()
                     .clipShape(Circle())
             } else {
-                Text("WD").font(.headline).foregroundStyle(.white)
+                Text("R").font(.headline).foregroundStyle(.white)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .privacySensitive(false)
         .unredacted()
-        .accessibilityLabel("Open Watch Dot")
+        .accessibilityLabel("Open Rillby")
         .containerBackground(.clear, for: .widget)
     }
 
@@ -102,7 +102,7 @@ struct WatchDotComplication: Widget {
         StaticConfiguration(kind: "cl.australapps.watchdot.launcher", provider: LauncherProvider()) { entry in
             LauncherIcon(appIcon: entry.icon)
         }
-        .configurationDisplayName("Watch Dot")
+        .configurationDisplayName("Rillby")
         .description("Opens the chat with your Dot.")
         .supportedFamilies([.accessoryCircular, .accessoryCorner])
         .contentMarginsDisabled()
