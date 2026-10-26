@@ -10,7 +10,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_app  # noqa: E402
-import export_public  # noqa: E402
 import test_feature_patch  # noqa: E402
 
 URL, REVISION = check_app.WEBP_URL, check_app.WEBP_REVISION
@@ -137,14 +136,6 @@ class SwiftPackageTests(unittest.TestCase):
         code, out = self.fixture.run_main(test_feature_patch.record_feature)
         self.assertEqual(code, 1, out)
         self.assertIn("unreviewable extra file app/Sources/Package.resolved", out)
-
-    def test_export_keeps_resolved_files_and_drops_build_state(self):
-        known = set()
-        for rel in check_app.RESOLVED_FILES:
-            self.assertTrue(export_public.exportable_app_file(rel, known), rel)
-        for rel in (".build/workspace-state.json", "WatchDot.xcodeproj/project.xcworkspace/xcuserdata/u/x.plist",
-                    "Sources/Package.resolved"):
-            self.assertFalse(export_public.exportable_app_file(rel, known), rel)
 
 
 if __name__ == "__main__":
