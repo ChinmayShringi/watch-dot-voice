@@ -7,6 +7,8 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- Account-backed avatar catalog with on-demand anonymous image downloads and protected offline caching.
+
 - Original Rillby app icon for the iPhone, Watch and complication, with recorded creation and
   asset hashes. The artwork is distributed under GPL-3.0-only with the project.
 - Avatar-first Watch home screen. Text chat, history, avatar choice and settings move into a
@@ -29,6 +31,8 @@ All notable changes are listed here. The format follows
 
 ### Changed
 
+- Build 9 enlarges avatar framing, removes the extra home name row, and animates only the focused picker page.
+
 - Build 8 names the app **Rillby**, formerly Watch Dot Voice, in its display names, setup copy and
   complication. Bundle IDs, Xcode targets and schemes, saved data and protocol identifiers retain
   their existing names. The complication refresh revision advances to 7.
@@ -50,7 +54,7 @@ All notable changes are listed here. The format follows
 ### Notes
 
 - Experimental: relies on non-public ChatGPT endpoints with no official support.
-- The `WatchDotCore` suite has 193 tests.
+- The `WatchDotCore` suite covers voice, account isolation, avatar selection, image validation and cache behavior.
 - VoiceOver, real audio interruptions (calls, Siri) and wrist-down timing have not been verified
   on a physical Apple Watch.
 

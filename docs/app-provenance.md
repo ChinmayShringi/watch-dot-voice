@@ -32,9 +32,20 @@ unreviewed project change.
   - their build files, in a sources phase;
   - `CURRENT_PROJECT_VERSION` and `MARKETING_VERSION`;
   - `INFOPLIST_KEY_CFBundleDisplayName` for the Rillby app name;
-  - the Watch target's microphone usage description.
+  - the Watch target's microphone usage description;
+  - one link from the Watch target to the `libwebp` product of
+    [SDWebImage/libwebp-Xcode](https://github.com/SDWebImage/libwebp-Xcode), pinned to revision
+    `2b5256c29ff4e20f2a0d5ee863b62b1a22144434`: the package reference, its product dependency, and
+    one build file in the Watch frameworks phase. Any other package, requirement, product or target
+    fails.
 
   Bundle IDs, targets, signing and embedding are checked separately and stay unchanged.
+- **Swift packages:** `Package.swift` may depend only on that package at that revision, with no
+  binary targets or unsafe flags. SwiftPM and Xcode rewrite `app/Package.resolved` and
+  `app/WatchDot.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`, so these are
+  checked by content rather than recorded: each, if present, must pin only that package at that
+  revision. libwebp's license and patent grant are in
+  [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
 
 ## Artwork
 

@@ -1,11 +1,19 @@
-# Custom sprite avatar
+# Avatar selection
 
-The repository ships no sprite artwork. The Watch app has three built-in avatars (Pebble, Orbit and
-Pixel), drawn in SwiftUI. It adds a sprite avatar, named after your connected Dot, only if an image
-named `AvatarAtlas` is in the Watch app's asset catalog. Without one, a saved sprite choice falls back
-to Pebble. The choice is stored locally and is cosmetic: it never changes which Dot the app talks to.
+Open **Options > Change Avatar** to browse the catalog available through your existing ChatGPT
+sign-in. The app fetches the catalog when the picker opens and downloads artwork as you browse.
+Downloaded artwork is cached per account; the selected avatar remains available offline. The
+catalog is a private OpenAI endpoint and can change without notice. No OpenAI artwork is shipped
+in this repository.
 
-## Atlas format
+Pebble, Orbit and Pixel are drawn in SwiftUI and always available. You may also supply a local
+`AvatarAtlas` image, named after your connected Dot. A saved choice is cosmetic and never changes
+which Dot the app talks to or your avatar in OpenAI apps. Existing local sprite choices are kept
+separate from downloaded avatars.
+
+## Optional local artwork
+
+### Atlas format
 
 | Property | Value |
 |---|---|
@@ -25,7 +33,7 @@ Rows used by the app (zero-based), left to right:
 
 The authoritative values are in `app/Sources/WatchDotCore/AvatarAnimation.swift`.
 
-## Adding your own
+### Adding your own
 
 1. Use artwork you have the right to use. Don't commit artwork you may not redistribute.
 2. Put the PNG at the path above, then assign it to the imageset. Either open

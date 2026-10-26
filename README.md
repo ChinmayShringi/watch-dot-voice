@@ -6,13 +6,9 @@ avatar, speak, and read the reply on your wrist. The repository remains `watch-d
 [![CI](https://github.com/ChinmayShringi/watch-dot-voice/actions/workflows/ci.yml/badge.svg)](https://github.com/ChinmayShringi/watch-dot-voice/actions/workflows/ci.yml)
 [![License: GPL-3.0-only](https://img.shields.io/badge/license-GPL--3.0--only-blue.svg)](LICENSE)
 
-This is a fork of [Torcata/watch-dot](https://github.com/Torcata/watch-dot) (GPL-3.0-only), pinned at
-`0ca53cc`. It adds English UI copy, portable signing, voice input with an animated avatar, and a
-checker that verifies every byte of the app against upstream plus the reviewed changes.
-
 > **Experimental and unofficial.** OpenAI publishes no Dot API. This app signs in with the Codex
 > CLI's OAuth client and calls **non-public, undocumented** ChatGPT endpoints
-> (`chatgpt.com/backend-api`), for Dot discovery, messaging and dictation. Nothing here is supported
+> (`chatgpt.com/backend-api`), for Dot discovery, messaging, dictation and the avatar catalog. Nothing here is supported
 > by OpenAI. There is no promise of stability, compatibility or continued access: any endpoint may
 > change, be rate-limited or be blocked at any time, and the app will then stop working. Review
 > OpenAI's terms before use, and use it at your own risk. Not affiliated with or endorsed by OpenAI
@@ -32,8 +28,10 @@ checker that verifies every byte of the app against upstream plus the reviewed c
 - **Full-screen replies.** A new reply opens in a scrollable reader (use the Digital Crown) and
   closes only with **Done** or the back-to-avatar control, so scrolling can never dismiss it or
   start a recording. Replies wait while you are recording, in a menu or in a sheet.
-- **Choose an avatar.** Page through Pebble, Orbit and Pixel, plus an optional sprite you supply
-  (see [docs/custom-avatar.md](docs/custom-avatar.md)). The choice is local and cosmetic; it never
+- **Choose an avatar.** Browse the avatar catalog available to your signed-in account, with artwork
+  downloaded on demand and your chosen avatar cached for offline use. Pebble, Orbit and Pixel are
+  available without a download, alongside an optional sprite you supply
+  (see [docs/custom-avatar.md](docs/custom-avatar.md)). The choice stays on your Watch and never
   changes which Dot you talk to.
 - **Private at a glance.** Conversation text, drafts and account details are hidden in Always On,
   while the app is inactive and under privacy redaction, for VoiceOver as well as on screen.
@@ -110,7 +108,12 @@ See [SECURITY.md](SECURITY.md).
 
 ## License
 
-GPL-3.0-only, inherited from upstream. See [LICENSE](LICENSE) and [app/NOTICE](app/NOTICE). The OAuth
+GPL-3.0-only, inherited from [Torcata/watch-dot](https://github.com/Torcata/watch-dot), which the app
+was originally derived from. See [LICENSE](LICENSE), and [app/NOTICE](app/NOTICE) for the list of
+changes. The OAuth
 flow follows the protocol of [openai/codex](https://github.com/openai/codex) (Apache-2.0) as a
 reference; no code is copied from it. The original generated Rillby icon uses the same GPL-3.0-only
 license; its creation and file hashes are documented in [docs/branding.md](docs/branding.md).
+
+The WebP fallback links libwebp, distributed under BSD-3-Clause with its patent grant. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the pinned source and full notices.
