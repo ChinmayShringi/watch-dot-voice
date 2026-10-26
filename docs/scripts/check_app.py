@@ -11,7 +11,9 @@ Verifies, without Xcode:
   2. Project: no hardcoded team or upstream bundle IDs, bundle IDs derive from
      WATCHDOT_BUNDLE_PREFIX, phone/watch/complication relationships intact, and
      no structural pbxproj change beyond the signing parameterization, except the
-     pinned feature delta (new Swift file references, version and microphone keys).
+     pinned feature delta (new Swift file references, version and microphone keys, and the
+     watch app's link to the libwebp package pinned by revision). Package.swift and any
+     Package.resolved may name only that package at that revision.
   3. Config: committed xcconfig holds placeholders only; the optional local
      override, if present, holds real-looking values; the override is git-ignored.
 
@@ -54,6 +56,17 @@ SIMULATOR_GUARD = "#if DEBUG && targetEnvironment(simulator)"
 FEATURE_SETTINGS = {"CURRENT_PROJECT_VERSION", "MARKETING_VERSION"}
 MICROPHONE_KEY = "INFOPLIST_KEY_NSMicrophoneUsageDescription"
 FILE_REF_KEYS = {"isa", "path", "name", "lastKnownFileType", "sourceTree", "fileEncoding", "includeInIndex"}
+# The one reviewed Swift package: libwebp, the watch app's fallback WebP decoder, pinned by revision.
+WEBP_URL = "https://github.com/SDWebImage/libwebp-Xcode.git"
+WEBP_REVISION = "2b5256c29ff4e20f2a0d5ee863b62b1a22144434"
+WEBP_PACKAGE = {"isa": "XCRemoteSwiftPackageReference", "repositoryURL": WEBP_URL,
+                "requirement": {"kind": "revision", "revision": WEBP_REVISION}}
+WEBP_PRODUCT = "libwebp"
+WEBP_PIN = {"identity": "libwebp-xcode", "kind": "remoteSourceControl", "location": WEBP_URL,
+            "state": {"revision": WEBP_REVISION}}
+WEBP_SWIFTPM = f'.package(url:"{WEBP_URL}",revision:"{WEBP_REVISION}")'  # Whitespace removed.
+# Written by SwiftPM and Xcode; checked by content (pins only), never recorded in the feature patch.
+RESOLVED_FILES = ("Package.resolved", "WatchDot.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved")
 
 
 def git(upstream, *args):
@@ -223,7 +236,7 @@ def check_provenance(app, upstream, translations, insertions, feature=None):
             errors.append(f"feature file differs from the reviewed patch: app/{rel}")
     assets = [entry["file"] for entry in feature["assets"]] if feature else []
     errors += feature_patch.asset_errors(app, feature) if feature else []
-    known = set(expected) | set(new_files) | set(assets)
+    known = set(expected) | set(new_files) | set(assets) | set(RESOLVED_FILES)  # See package_errors.
     if app.is_symlink():
         errors.append("app/ must not be a symlink")
     for path in app.rglob("*"):
@@ -380,7 +393,8 @@ def project_paths(objects, key=None, parent=""):
 
 def feature_delta_errors(base, current, new_files):
     """The feature may only add Swift file references and their build files, insert them into
-    groups and sources phases, and change version keys (plus the microphone key on the watch)."""
+    groups and sources phases, change version keys (plus the microphone key on the watch), and
+    link the one pinned libwebp package product into the watch app."""
     errors = []
     if removed := sorted(set(base) - set(current)):
         errors.append(f"feature removes project objects: {', '.join(removed)}")
@@ -395,22 +409,47 @@ def feature_delta_errors(base, current, new_files):
     refs = {k for k, path in candidates.items() if path in swift and resolved.count(path) == 1}
     builds = {k for k, o in added.items() if o.get("isa") == "PBXBuildFile" and set(o) == {"isa", "fileRef"}
               and o["fileRef"] in refs}
-    errors += [f"feature adds a disallowed project object {k}" for k in sorted(set(added) - refs - builds)]
+    package = {k for k, o in added.items() if o == WEBP_PACKAGE}
+    products = {k for k, o in added.items() if o == {"isa": "XCSwiftPackageProductDependency",
+                                                     "package": o.get("package"), "productName": WEBP_PRODUCT}
+                and o["package"] in package}
+    links = {k for k, o in added.items() if o.get("isa") == "PBXBuildFile" and set(o) == {"isa", "productRef"}
+             and o["productRef"] in products}
+    allowed = refs | builds | package | products | links
+    errors += [f"feature adds a disallowed project object {k}" for k in sorted(set(added) - allowed)]
+    if {len(package), len(products), len(links)} not in ({0}, {1}):
+        errors.append("the libwebp package needs exactly one reference, product and watch app link")
     watch = targets_by_name(current).get("WatchDot")
+    watch_key = next((k for k, o in current.items() if o is watch), None)
     watch_configs = set(current[watch["buildConfigurationList"]]["buildConfigurations"]) if watch else set()
+    watch_frameworks = {p for p in (watch or {}).get("buildPhases", [])
+                        if current.get(p, {}).get("isa") == "PBXFrameworksBuildPhase"}
     brand_configs = {cfg for target in targets_by_name(base).values()
                      if target.get("name") in EXPECTED_IDS
                      for cfg in base[target["buildConfigurationList"]]["buildConfigurations"]}
-    placed = {"children": [], "files": []}
+
+    def growth(key, obj):
+        """The list an existing object may extend, the label, and the new objects it may receive."""
+        if obj.get("isa") == "PBXProject":
+            return "packageReferences", "package reference", package
+        if key == watch_key:
+            return "packageProductDependencies", "package product", products
+        if key in watch_frameworks:
+            return "files", "package link", links
+        return {"PBXGroup": ("children", "file reference", refs),
+                "PBXSourcesBuildPhase": ("files", "build file", builds)}.get(obj.get("isa"), (None, None, set()))
+
+    placed = {"file reference": [], "build file": [], "package reference": [], "package product": [],
+              "package link": []}
     for key in sorted(set(base) & set(current)):
         old, new = base[key], current[key]
         if old == new:
             continue
-        field = {"PBXGroup": "children", "PBXSourcesBuildPhase": "files"}.get(old.get("isa"))
+        field, label, pool = growth(key, old)
         if field and without(old, field) == without(new, field):
-            extra = appended(old[field], new[field])
-            if extra is not None and set(extra) <= (refs if field == "children" else builds):
-                placed = {**placed, field: placed[field] + extra}
+            extra = appended(old.get(field, []), new.get(field, []))
+            if extra is not None and set(extra) <= pool:
+                placed = {**placed, label: placed[label] + extra}
                 continue
         if old.get("isa") == "XCBuildConfiguration" and without(old, "buildSettings") == without(new, "buildSettings"):
             before, after = old["buildSettings"], new["buildSettings"]
@@ -421,9 +460,39 @@ def feature_delta_errors(base, current, new_files):
             if changed <= allowed and all(isinstance(after.get(k), str) and after[k].strip() for k in changed):
                 continue
         errors.append(f"feature changes project object {key} beyond reviewed additions")
-    for field, pool, what in (("children", refs, "file reference"), ("files", builds, "build file")):
-        if sorted(placed[field]) != sorted(pool):
-            errors.append(f"each new {what} must be added exactly once")
+    pools = {"file reference": refs, "build file": builds, "package reference": package,
+             "package product": products, "package link": links}
+    for label, pool in pools.items():
+        if sorted(placed[label]) != sorted(pool):
+            errors.append(f"each new {label} must be added exactly once")
+    return errors
+
+
+def package_errors(app):
+    """Package.swift may depend only on the pinned libwebp revision, and each Package.resolved, where
+    present, may pin only that package at that revision."""
+    errors = []
+    manifest = app / "Package.swift"
+    if manifest.is_file():
+        text = "".join(manifest.read_text(encoding="utf-8").split())
+        count = text.count(".package(")
+        if count > 1 or count != text.count(WEBP_SWIFTPM):
+            errors.append("Package.swift may depend only on libwebp-Xcode pinned by revision")
+        if ".binaryTarget(" in text or "unsafeFlags(" in text:
+            errors.append("Package.swift must not use binary targets or unsafe flags")
+    for rel in RESOLVED_FILES:
+        path = app / rel
+        if path.is_symlink() or not path.is_file():
+            continue  # Symlinks are reported by the provenance scan.
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            data = None
+        valid = (isinstance(data, dict) and set(data) - {"originHash"} == {"pins", "version"}
+                 and type(data["version"]) is int and data["version"] in (2, 3) and data["pins"] == [WEBP_PIN]
+                 and re.fullmatch(r"[0-9a-f]{64}", str(data.get("originHash", "0" * 64))) is not None)
+        if not valid:
+            errors.append(f"app/{rel} must pin only libwebp-Xcode at {WEBP_REVISION[:12]}")
     return errors
 
 
@@ -534,7 +603,7 @@ def main(argv=None):
         print(f"FAIL feature manifest is invalid: {error}")
         return 1
     errors = (check_provenance(app, upstream, translations, insertions, feature)
-              + check_project(app, upstream, feature) + check_config(root))
+              + check_project(app, upstream, feature) + package_errors(app) + check_config(root))
     for error in errors:
         print(f"FAIL {error}")
     if errors:

@@ -58,8 +58,8 @@ def recorded(root, upstream, artwork_rel):
             continue
         if path.is_symlink():
             raise ValueError(f"symlink not allowed: app/{rel}")
-        if not path.is_file() or rel in known:
-            continue
+        if not path.is_file() or rel in known or rel in check_app.RESOLVED_FILES:
+            continue  # Package.resolved is checked by content, since SwiftPM may rewrite it.
         if feature_patch.allowed_new_file(rel):
             new_files.append(rel)
             diffs.append(feature_patch.unified_diff(rel, None, path.read_text(encoding="utf-8")))

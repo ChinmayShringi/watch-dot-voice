@@ -23,7 +23,8 @@ class CheckAppTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.root)  # setUp also re-runs per subTest
-        shutil.copytree(REPO / "app", self.root / "app")
+        # Skip build state (a SwiftPM .build can be gigabytes); the checker ignores it anyway.
+        shutil.copytree(REPO / "app", self.root / "app", ignore=shutil.ignore_patterns(*check_app.IGNORED_PARTS))
         shutil.copytree(REPO / "docs/config", self.root / "docs/config")
         shutil.copytree(REPO / "docs/translation", self.root / "docs/translation")
         shutil.copytree(REPO / "docs/patches", self.root / "docs/patches")
